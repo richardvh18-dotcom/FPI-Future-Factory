@@ -32,7 +32,6 @@ const VIEW_MODES = [
   { id: "tolerance", label: "Toleranties", icon: <Info size={18} /> },
 ];
 
-// AANPASSING: Labels ingekort naar alleen CB en TB
 const SUB_TYPES_BELL = [
   { id: "cb", label: "CB", collection: "cb_dimensions" },
   { id: "tb", label: "TB", collection: "tb_dimensions" },
@@ -125,7 +124,7 @@ const DimensionsView = ({
   const [listSearch, setListSearch] = useState("");
 
   const getCollectionName = () => {
-    if (activeMode === "fitting") return "fitting_dimensions";
+    if (activeMode === "fitting") return "standard_fitting_specs";
     if (activeMode === "bell")
       return bellSubType === "cb" ? "cb_dimensions" : "tb_dimensions";
     return null;
@@ -151,13 +150,22 @@ const DimensionsView = ({
         id: doc.id,
         ...doc.data(),
       }));
-      data.sort((a, b) =>
+
+      let filtered = data;
+      if (activeMode === "fitting") {
+        const variant = bellSubType.toUpperCase();
+        filtered = data.filter(
+          (item) => item.id && item.id.includes(`_${variant}_`)
+        );
+      }
+
+      filtered.sort((a, b) =>
         a.id.localeCompare(b.id, undefined, {
           numeric: true,
           sensitivity: "base",
         })
       );
-      setDimData(data);
+      setDimData(filtered);
     } catch (error) {
       console.error("Fout bij laden:", error);
     } finally {
@@ -171,17 +179,10 @@ const DimensionsView = ({
       return libraryData.pns || [];
 
     const pns = new Set();
-    let connKeys = [];
-
-    if (activeMode === "bell") {
-      connKeys = [bellSubType.toUpperCase()]; // ['CB'] of ['TB']
-    } else {
-      // Bij fittingen kijken we in beide (want fitting kan CB of TB zijn)
-      connKeys = ["CB", "TB"];
-    }
+    const connKeys =
+      activeMode === "bell" ? [bellSubType.toUpperCase()] : ["CB", "TB"];
 
     connKeys.forEach((conn) => {
-      // Probeer directe map 'TB' of variant 'TB/TB'
       const rangeForConn =
         productRange[conn] || productRange[`${conn}/${conn}`];
       if (rangeForConn) {
@@ -197,33 +198,19 @@ const DimensionsView = ({
   // --- 2. BESCHIKBARE ID's UIT MATRIX HALEN ---
   const getAvailableIDs = () => {
     if (!dimFilters.pn) return [];
-    // Fallback naar library als matrix leeg is
     if (!productRange || Object.keys(productRange).length === 0)
       return libraryData.diameters || [];
 
     const pnKey = String(dimFilters.pn);
     const allIds = new Set();
 
-    // Helper om IDs uit een range object te halen
-    const collectIdsFromRange = (rangeObj) => {
-      if (!rangeObj) return;
-      Object.values(rangeObj).forEach((idsList) => {
-        if (Array.isArray(idsList)) {
-          idsList.forEach((id) => allIds.add(Number(id)));
-        }
-      });
-    };
-
     if (activeMode === "fitting" && dimFilters.type) {
-      // FITTING MODUS: Zoek specifiek op Type in CB en TB
       const typeKey = dimFilters.type;
       ["CB", "TB"].forEach((conn) => {
         const matrixConn =
           productRange[conn] || productRange[`${conn}/${conn}`];
         const range = matrixConn?.[pnKey];
-
         if (range) {
-          // Check basis, socket en spiggot varianten van dit type
           [typeKey, `${typeKey}_Socket`, `${typeKey}_Spiggot`].forEach((tk) => {
             if (range[tk] && Array.isArray(range[tk])) {
               range[tk].forEach((id) => allIds.add(Number(id)));
@@ -232,18 +219,15 @@ const DimensionsView = ({
         }
       });
     } else {
-      // BELL MODUS: Zoek ALLES onder de gekozen connectie
-      let connKey = activeMode === "bell" ? bellSubType.toUpperCase() : "CB";
-      const connsToCheck = activeMode === "bell" ? [connKey] : ["CB", "TB"];
-
-      connsToCheck.forEach((conn) => {
-        const rangeForConn =
-          productRange[conn] || productRange[`${conn}/${conn}`];
-        const range = rangeForConn?.[pnKey];
-
-        // Verzamel alles (want mof maten gelden voor alle types)
-        collectIdsFromRange(range);
-      });
+      const connKey = bellSubType.toUpperCase();
+      const matrixConn =
+        productRange[connKey] || productRange[`${connKey}/${connKey}`];
+      const range = matrixConn?.[pnKey];
+      if (range) {
+        Object.values(range).forEach((ids) => {
+          if (Array.isArray(ids)) ids.forEach((id) => allIds.add(Number(id)));
+        });
+      }
     }
 
     if (allIds.size === 0) return [];
@@ -251,13 +235,38 @@ const DimensionsView = ({
     return Array.from(allIds).sort((a, b) => a - b);
   };
 
-  const getActiveBlueprint = (connSuffix, extraCode) => {
+  // --- 3. SLIMME TEMPLATE ZOEKEN (AANGEPAST) ---
+  const getActiveBlueprint = (connSuffix, extraCode, productType) => {
+    // 1. Zoek op specifiek Product Type (bv. Elbow)
+    if (productType) {
+      // Met extra code? bv. Elbow_TB_CODE
+      if (extraCode) {
+        let key = `${productType}_${connSuffix}_${extraCode}`;
+        if (blueprints[key]) return blueprints[key];
+      }
+
+      // Zoek exacte match zoals in database: Elbow_TB/TB
+      let keyDouble = `${productType}_${connSuffix}/${connSuffix}`;
+      if (blueprints[keyDouble]) return blueprints[keyDouble];
+
+      // Zoek standaard match: Elbow_TB
+      let keySingle = `${productType}_${connSuffix}`;
+      if (blueprints[keySingle]) return blueprints[keySingle];
+    }
+
+    // 2. Fallback naar Algemeen (voor Bell of als product niet bestaat)
     if (extraCode) {
       let keyWithCode = `Algemeen_${connSuffix}_${extraCode}`;
       if (blueprints[keyWithCode]) return blueprints[keyWithCode];
     }
+
+    // Probeer Algemeen_TB/TB (zoals in jouw database)
+    let bpKeyDouble = `Algemeen_${connSuffix}/${connSuffix}`;
+    if (blueprints[bpKeyDouble]) return blueprints[bpKeyDouble];
+
     let bpKey = `Algemeen_${connSuffix}`;
     if (blueprints[bpKey]) return blueprints[bpKey];
+
     return blueprints["Algemeen"] || { fields: [] };
   };
 
@@ -270,12 +279,16 @@ const DimensionsView = ({
     let newKey = "";
     const variantUpper = bellSubType.toUpperCase();
 
+    // Bepaal Product Type (alleen voor Fitting)
+    let selectedType = null;
+
     if (activeMode === "fitting") {
       if (!dimFilters.type) {
         alert("Selecteer een Product Type (bijv. Elbow).");
         return;
       }
-      newKey = `${dimFilters.type.toUpperCase()}_${variantUpper}_PN${
+      selectedType = dimFilters.type;
+      newKey = `${selectedType.toUpperCase()}_${variantUpper}_PN${
         dimFilters.pn
       }_ID${dimFilters.id}`;
     } else {
@@ -286,20 +299,35 @@ const DimensionsView = ({
       newKey += `_${dimFilters.extraCode.toUpperCase()}`;
     }
 
-    const connSuffix = variantUpper;
-    const blueprint = getActiveBlueprint(connSuffix, dimFilters.extraCode);
+    const connSuffix = activeMode === "bell" ? variantUpper : "Fitting";
+    // OUDE FOUT: Hier werd connSuffix 'Fitting' in fitting modus, waardoor hij Elbow_Fitting zocht ipv Elbow_TB
+    // CORRECTIE: We geven variantUpper (TB/CB) door
+    const blueprint = getActiveBlueprint(
+      variantUpper,
+      dimFilters.extraCode,
+      selectedType
+    );
     let fields = blueprint.fields || [];
 
+    // Fallback velden
     if (fields.length === 0) {
       if (activeMode === "bell") {
         if (bellSubType === "tb") fields = ["B1", "B2", "BA", "r1", "alpha"];
         else fields = ["B1", "B2", "BA", "A1"];
       } else {
-        fields = ["L", "Z", "BD", "d"];
+        fields = ["L", "Z", "BD", "W"];
+        if (bellSubType === "cb") fields.push("TWcb");
+        if (bellSubType === "tb") fields.push("TWtb");
       }
     }
 
-    const newDoc = { id: newKey };
+    const newDoc = {
+      id: newKey,
+      type: activeMode === "fitting" ? dimFilters.type : "Bell",
+      pressure: Number(dimFilters.pn),
+      diameter: Number(dimFilters.id),
+    };
+
     fields.forEach((field) => {
       newDoc[field] = "";
     });
@@ -341,7 +369,9 @@ const DimensionsView = ({
 
   const renderFields = () => {
     if (!editingDim) return null;
-    const docFields = Object.keys(editingDim).filter((k) => k !== "id");
+    const docFields = Object.keys(editingDim).filter(
+      (k) => !["id", "type", "pressure", "diameter"].includes(k)
+    );
     const groupedFields = {
       socket: [],
       dimensions: [],
@@ -464,6 +494,7 @@ const DimensionsView = ({
                   onClick={() => {
                     setBellSubType(sub.id);
                     setEditingDim(null);
+                    setDimFilters({ pn: "", id: "", extraCode: "", type: "" });
                   }}
                   className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
                     bellSubType === sub.id

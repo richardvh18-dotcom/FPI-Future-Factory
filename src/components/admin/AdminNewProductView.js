@@ -1,6 +1,15 @@
-import React, { useState, useEffect } from "react";
-import { doc, setDoc, getDoc } from "firebase/firestore";
-import { db, appId } from "../../config/firebase";
+import React, { useState, useEffect, useMemo } from "react";
+import {
+  doc,
+  setDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  getDoc,
+  limit,
+} from "firebase/firestore";
+import { db, appId, auth } from "../../config/firebase";
 import {
   Save,
   X,
@@ -10,9 +19,9 @@ import {
   Search,
   Loader2,
   Ruler,
+  Copy,
 } from "lucide-react";
 
-// Importeer de helpers
 import {
   generateProductCode,
   validateProductData,
@@ -21,16 +30,16 @@ import {
 
 const AdminNewProductView = ({ onFinished }) => {
   const [loading, setLoading] = useState(false);
-  const [fetching, setFetching] = useState(false);
+  const [fetchingDetails, setFetchingDetails] = useState(false);
 
-  // State voor opties uit database
+  // Data States
   const [configOptions, setConfigOptions] = useState({
     types: [],
     connections: [],
     pns: [],
   });
-
-  const [availableDiameters, setAvailableDiameters] = useState([]);
+  const [matrixData, setMatrixData] = useState(null);
+  const [templates, setTemplates] = useState({}); // NIEUW: Templates laden
 
   const [formData, setFormData] = useState({
     type: "",
@@ -46,6 +55,15 @@ const AdminNewProductView = ({ onFinished }) => {
     productCode: "",
     stock: 0,
     price: 0,
+    // Extra dimensie velden
+    TW: "",
+    TWtb: "",
+    TWcb: "",
+    BD: "",
+    W: "",
+    L: "",
+    Z: "",
+    B1: "",
   });
 
   const isFlange =
@@ -56,84 +74,127 @@ const AdminNewProductView = ({ onFinished }) => {
   const isElbow = formData.type && formData.type.includes("Elbow");
   const isTee = formData.type && formData.type.includes("Tee");
 
-  // --- 1. CONFIGURATIE LADEN (Opties) ---
+  // --- 0. LAAD CONFIG & MATRIX & TEMPLATES ---
   useEffect(() => {
-    const fetchConfig = async () => {
+    const fetchData = async () => {
       try {
-        const configRef = doc(
-          db,
-          "artifacts",
-          appId,
-          "public",
-          "data",
-          "settings",
-          "general_config"
+        // Config
+        const configSnap = await getDoc(
+          doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "settings",
+            "general_config"
+          )
         );
-        const snapshot = await getDoc(configRef);
-        if (snapshot.exists()) {
-          const data = snapshot.data();
+        if (configSnap.exists()) {
+          const data = configSnap.data();
           setConfigOptions({
             types: data.product_names || [],
             connections: data.connections || [],
             pns: (data.pns || []).sort((a, b) => a - b),
           });
         }
+
+        // Matrix
+        const matrixSnap = await getDoc(
+          doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "settings",
+            "product_range"
+          )
+        );
+        if (matrixSnap.exists()) {
+          setMatrixData(matrixSnap.data());
+        }
+
+        // Templates (Blauwdrukken)
+        const templateSnap = await getDoc(
+          doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "settings",
+            "product_templates"
+          )
+        );
+        if (templateSnap.exists()) {
+          setTemplates(templateSnap.data());
+        }
       } catch (error) {
-        console.error("Config laadfout:", error);
+        console.error("Fout bij laden data:", error);
       }
     };
-    fetchConfig();
+    fetchData();
   }, []);
 
-  // --- 2. DIAMETERS UIT MATRIX HALEN ---
-  useEffect(() => {
-    const fetchValidDiameters = async () => {
-      if (!formData.type || !formData.mofType || !formData.pressure) {
-        setAvailableDiameters([]);
-        return;
-      }
+  // --- 2. SLIMME DROPDOWN LOGICA (Matrix check) ---
+  const availablePNs = useMemo(() => {
+    if (!matrixData || !formData.type || !formData.mofType)
+      return configOptions.pns;
 
-      setFetching(true);
-      try {
-        const rangeRef = doc(
-          db,
-          "artifacts",
-          appId,
-          "public",
-          "data",
-          "settings",
-          "product_range"
-        );
-        const docSnap = await getDoc(rangeRef);
+    const connKey = formData.mofType.split("/")[0].toUpperCase().trim();
+    const typeKey = formData.type;
+    const pns = new Set();
 
-        if (docSnap.exists()) {
-          const matrix = docSnap.data();
-          const connKey = formData.mofType.split("/")[0].toUpperCase().trim();
-          const pnKey = String(formData.pressure);
-          const typeKey = formData.type;
+    // Check zowel basis als socket varianten in de matrix
+    const rangeForConn =
+      matrixData[connKey] || matrixData[`${connKey}/${connKey}`]; // Fallback voor TB/TB keys
 
-          // Zoek op meerdere plekken (Base, Socket, Spiggot)
-          const baseRange = matrix?.[connKey]?.[pnKey]?.[typeKey] || [];
-          const socketRange =
-            matrix?.[connKey]?.[pnKey]?.[`${typeKey}_Socket`] || [];
-
-          const allDiameters = [...new Set([...baseRange, ...socketRange])];
-
-          if (allDiameters.length > 0) {
-            setAvailableDiameters(allDiameters.sort((a, b) => a - b));
-          } else {
-            setAvailableDiameters([]);
-          }
+    if (rangeForConn) {
+      Object.keys(rangeForConn).forEach((pn) => {
+        const rangeForPn = rangeForConn[pn];
+        if (
+          (rangeForPn[typeKey] && rangeForPn[typeKey].length > 0) ||
+          (rangeForPn[`${typeKey}_Socket`] &&
+            rangeForPn[`${typeKey}_Socket`].length > 0)
+        ) {
+          pns.add(Number(pn));
         }
-      } catch (err) {
-        console.error("Matrix fout:", err);
-      } finally {
-        setFetching(false);
-      }
-    };
+      });
+    }
+    return pns.size > 0
+      ? Array.from(pns).sort((a, b) => a - b)
+      : configOptions.pns;
+  }, [matrixData, formData.type, formData.mofType, configOptions.pns]);
 
-    fetchValidDiameters();
-  }, [formData.type, formData.mofType, formData.pressure]);
+  const availableDiameters = useMemo(() => {
+    if (
+      !matrixData ||
+      !formData.type ||
+      !formData.mofType ||
+      !formData.pressure
+    )
+      return [];
+
+    const connKey = formData.mofType.split("/")[0].toUpperCase().trim();
+    const pnKey = String(formData.pressure);
+    const typeKey = formData.type;
+
+    const rangeForConn =
+      matrixData[connKey] || matrixData[`${connKey}/${connKey}`];
+    const rangeForPn = rangeForConn?.[pnKey];
+
+    if (!rangeForPn) return [];
+
+    const diameters = new Set();
+    // Check basis en socket/spiggot varianten
+    [typeKey, `${typeKey}_Socket`, `${typeKey}_Spiggot`].forEach((key) => {
+      if (rangeForPn[key])
+        rangeForPn[key].forEach((d) => diameters.add(Number(d)));
+    });
+
+    return Array.from(diameters).sort((a, b) => a - b);
+  }, [matrixData, formData.type, formData.mofType, formData.pressure]);
 
   // --- 3. AUTO CODE GENERATOR ---
   useEffect(() => {
@@ -151,11 +212,115 @@ const AdminNewProductView = ({ onFinished }) => {
     formData.label,
   ]);
 
+  // --- 4. DETAILS SYNCEN & TEMPLATE LOGICA ---
+  const fetchDefaultData = async () => {
+    if (!formData.diameter || !formData.pressure || !formData.type) return;
+
+    setFetchingDetails(true);
+    try {
+      let updatedData = {};
+      const numericDiameter = Number(formData.diameter);
+      const numericPressure = Number(formData.pressure);
+
+      // 1. Zoek bijpassende Blauwdruk (Template)
+      const connSuffix = formData.mofType.toUpperCase().split("/")[0];
+      let templateKey = `${formData.type}_${connSuffix}`;
+
+      let activeTemplate = templates[templateKey];
+      if (!activeTemplate)
+        activeTemplate =
+          templates[`${formData.type}_${connSuffix}/${connSuffix}`];
+
+      console.log("Template gevonden:", templateKey, activeTemplate);
+
+      // 2. Haal data op uit standard_fitting_specs
+      const specQueryBase = query(
+        collection(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          "standard_fitting_specs"
+        ),
+        where("type", "==", formData.type),
+        where("diameter", "==", numericDiameter),
+        where("pressure", "==", numericPressure),
+        limit(1)
+      );
+      const specQuerySocket = query(
+        collection(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          "standard_fitting_specs"
+        ),
+        where("type", "==", `${formData.type}_Socket`),
+        where("diameter", "==", numericDiameter),
+        where("pressure", "==", numericPressure),
+        limit(1)
+      );
+
+      const [snapBase, snapSocket] = await Promise.all([
+        getDocs(specQueryBase),
+        getDocs(specQuerySocket),
+      ]);
+
+      if (!snapBase.empty) {
+        const d = snapBase.docs[0].data();
+        if (d.drawingNr) updatedData.drawingNr = d.drawingNr;
+        if (d.radius) updatedData.radius = d.radius;
+        if (d.angle) updatedData.angle = d.angle;
+        // Neem basis maten over (L, Z)
+        if (d.L) updatedData.L = d.L;
+        if (d.Z) updatedData.Z = d.Z;
+      }
+
+      if (!snapSocket.empty) {
+        const dSocket = snapSocket.docs[0].data();
+        // Merge socket specifieke data (TW, BD, W)
+        const { id, type, diameter, pressure, ...socketProps } = dSocket;
+        updatedData = { ...updatedData, ...socketProps };
+      }
+
+      // 3. Flens Data
+      if (isFlange) {
+        const boreQuery = query(
+          collection(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "bore_dimensions"
+          ),
+          where("dn", "==", numericDiameter),
+          where("pn", "==", numericPressure),
+          limit(1)
+        );
+        const boreSnap = await getDocs(boreQuery);
+        if (!boreSnap.empty) {
+          const b = boreSnap.docs[0].data();
+          updatedData.drilling = `PCD ${b.pcd} / ${b.holes} x M${
+            b.thread || b.bolt
+          }`;
+        }
+      }
+
+      setFormData((prev) => ({ ...prev, ...updatedData }));
+    } catch (err) {
+      console.error("Fout bij ophalen details:", err);
+    } finally {
+      setFetchingDetails(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
 
-    // Validatie via Helper
     const validation = validateProductData(formData);
     if (!validation.isValid) {
       alert("Let op:\n" + validation.errors.join("\n"));
@@ -163,8 +328,7 @@ const AdminNewProductView = ({ onFinished }) => {
       return;
     }
 
-    // Formatteren via Helper
-    const dataToSave = formatProductForSave(formData);
+    const productToSave = formatProductForSave(formData);
 
     try {
       await setDoc(
@@ -175,29 +339,61 @@ const AdminNewProductView = ({ onFinished }) => {
           "public",
           "data",
           "products",
-          dataToSave.id
+          productToSave.id
         ),
-        dataToSave
+        productToSave
       );
-
-      alert("✅ Product succesvol toegevoegd aan de hoofddatabase!");
-      if (onFinished) onFinished();
-    } catch (error) {
-      console.error("Error saving:", error);
-      alert("Fout bij opslaan: " + error.message);
+      alert("✅ Product succesvol aangemaakt!");
+      onFinished();
+    } catch (err) {
+      alert("Fout bij opslaan: " + err.message);
     } finally {
       setLoading(false);
     }
   };
 
   const inputStyle =
-    "w-full bg-slate-50 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all placeholder:text-slate-300";
+    "w-full p-2 bg-white border border-slate-300 rounded-sm text-sm outline-none focus:border-blue-600 appearance-none font-medium";
   const labelStyle =
-    "block text-xs font-black text-slate-400 uppercase tracking-widest mb-2 ml-1";
+    "block text-[11px] font-black text-slate-500 uppercase mb-1 tracking-tight";
+
+  // Render extra velden gebaseerd op data
+  const renderExtraFields = () => {
+    // Welke velden hebben we gevuld uit de specs?
+    const extraKeys = ["L", "Z", "BD", "W", "TWcb", "TWtb", "B1"];
+    // Filter keys die data hebben
+    const activeKeys = extraKeys.filter((k) => formData[k]);
+
+    if (activeKeys.length === 0) return null;
+
+    return (
+      <div className="col-span-1 md:col-span-3 bg-blue-50 border border-blue-100 p-4 rounded-xl mt-4">
+        <h4 className="text-xs font-bold text-blue-700 uppercase mb-2 flex items-center gap-2">
+          <Ruler size={14} /> Technische Specificaties (Auto-filled)
+        </h4>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {activeKeys.map((key) => (
+            <div key={key}>
+              <label className="block text-[10px] font-bold text-blue-400 uppercase">
+                {key}
+              </label>
+              <input
+                className="w-full bg-white border border-blue-200 rounded p-1.5 text-xs font-mono font-bold text-blue-800"
+                value={formData[key]}
+                onChange={(e) =>
+                  setFormData({ ...formData, [key]: e.target.value })
+                }
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-      <div className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl border border-white/50 overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl border border-white/50 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="bg-slate-50 px-8 py-6 border-b border-slate-100 flex justify-between items-center shrink-0">
           <div>
@@ -219,24 +415,31 @@ const AdminNewProductView = ({ onFinished }) => {
 
         {/* Form Content */}
         <div className="p-8 overflow-y-auto custom-scrollbar">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Sectie 1: Basis Info */}
-            <div className="grid grid-cols-2 gap-6">
-              <div className="col-span-2">
-                <label className={labelStyle}>
-                  <Settings size={14} className="inline mr-2 mb-0.5" />
-                  Type Fitting
-                </label>
+          <form
+            onSubmit={handleSubmit}
+            className="grid grid-cols-1 md:grid-cols-3 gap-8"
+          >
+            {/* KOLOM 1 */}
+            <div className="bg-white border border-slate-200 p-6 space-y-4 shadow-sm rounded-xl">
+              <div className="text-[10px] font-black text-blue-600 uppercase border-b pb-2 mb-4 tracking-widest flex items-center gap-2">
+                <Database size={14} /> Specification Source
+              </div>
+
+              <div>
+                <label className={labelStyle}>Product Type</label>
                 <select
+                  required
                   className={inputStyle}
                   value={formData.type}
                   onChange={(e) =>
-                    setFormData({ ...formData, type: e.target.value })
+                    setFormData({
+                      ...formData,
+                      type: e.target.value,
+                      diameter: "",
+                    })
                   }
-                  required
                 >
-                  <option value="">-- Selecteer Type --</option>
-                  {/* Filter socket types eruit voor de gebruiker */}
+                  <option value="">-- Choose Type --</option>
                   {configOptions.types
                     .filter(
                       (t) => !t.includes("_Socket") && !t.includes("_Spiggot")
@@ -249,119 +452,89 @@ const AdminNewProductView = ({ onFinished }) => {
                 </select>
               </div>
 
-              {/* Conditional Fields based on Type */}
-              {(isElbow || isTee) && (
-                <>
-                  <div>
-                    <label className={labelStyle}>Mof Type</label>
-                    <select
-                      className={inputStyle}
-                      value={formData.mofType}
-                      onChange={(e) =>
-                        setFormData({ ...formData, mofType: e.target.value })
-                      }
-                    >
-                      <option value="">-- Select --</option>
-                      {configOptions.connections.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelStyle}>Hoek (Graden)</label>
-                    <select
-                      className={inputStyle}
-                      value={formData.angle}
-                      onChange={(e) =>
-                        setFormData({ ...formData, angle: e.target.value })
-                      }
-                    >
-                      <option value="">-- Select --</option>
-                      <option value="90">90°</option>
-                      <option value="45">45°</option>
-                      <option value="30">30°</option>
-                      <option value="22.5">22.5°</option>
-                      <option value="11.25">11.25°</option>
-                    </select>
-                  </div>
-                </>
-              )}
-
-              {isElbow && (
-                <div className="col-span-2">
-                  <label className={labelStyle}>Radius (R)</label>
-                  <select
-                    className={inputStyle}
-                    value={formData.radius}
-                    onChange={(e) =>
-                      setFormData({ ...formData, radius: e.target.value })
-                    }
-                  >
-                    <option value="">-- Select --</option>
-                    <option value="1.5D">1.5D</option>
-                    <option value="3D">3D</option>
-                  </select>
-                </div>
-              )}
-            </div>
-
-            <div className="h-px bg-slate-100 my-4"></div>
-
-            {/* Sectie 2: Specificaties */}
-            <div className="grid grid-cols-2 gap-6">
               <div>
-                <label className={labelStyle}>
-                  <Ruler size={14} className="inline mr-2 mb-0.5" />
-                  Drukklasse (PN)
-                </label>
+                <label className={labelStyle}>Mof Type</label>
                 <select
-                  className={inputStyle}
-                  value={formData.pressure}
-                  onChange={(e) =>
-                    setFormData({ ...formData, pressure: e.target.value })
-                  }
                   required
+                  className={inputStyle}
+                  value={formData.mofType}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      mofType: e.target.value,
+                      diameter: "",
+                    })
+                  }
                 >
-                  <option value="">-- Select PN --</option>
-                  {configOptions.pns.map((pn) => (
-                    <option key={pn} value={pn}>
-                      PN {pn}
+                  <option value="">-- Choose Mof --</option>
+                  {configOptions.connections.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
                     </option>
                   ))}
                 </select>
               </div>
 
               <div>
-                <label className={labelStyle}>
-                  <Ruler size={14} className="inline mr-2 mb-0.5" />
-                  Diameter (DN)
-                </label>
+                <label className={labelStyle}>Pressure (PN)</label>
+                <select
+                  required
+                  className={inputStyle}
+                  value={formData.pressure}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      pressure: e.target.value,
+                      diameter: "",
+                    })
+                  }
+                >
+                  <option value="">-- Choose PN --</option>
+                  {availablePNs.map((pn) => (
+                    <option key={pn} value={pn}>
+                      PN {pn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* KOLOM 2 */}
+            <div className="bg-white border border-slate-200 p-6 space-y-4 shadow-sm rounded-xl">
+              <div className="text-[10px] font-black text-blue-600 uppercase border-b pb-2 mb-4 tracking-widest flex items-center gap-2">
+                <Search size={14} /> Validated Options
+              </div>
+
+              <div>
+                <label className={labelStyle}>Available Diameters</label>
                 <div className="relative">
                   <select
-                    className={inputStyle}
+                    required
+                    className={`${inputStyle} ${
+                      availableDiameters.length > 0
+                        ? "border-blue-500 bg-blue-50/20"
+                        : ""
+                    }`}
                     value={formData.diameter}
                     onChange={(e) =>
                       setFormData({ ...formData, diameter: e.target.value })
                     }
-                    disabled={!formData.pressure || fetching}
-                    required
+                    disabled={availableDiameters.length === 0}
                   >
                     <option value="">
-                      {fetching
-                        ? "Laden..."
+                      {fetchingDetails
+                        ? "Checking Matrix..."
                         : availableDiameters.length > 0
                         ? "-- Select DN --"
-                        : "Geen opties"}
+                        : "Not in Matrix"}
                     </option>
                     {availableDiameters.map((d) => (
                       <option key={d} value={d}>
-                        DN {d}
+                        DN {d} mm
                       </option>
                     ))}
                   </select>
-                  {fetching && (
+                  {fetchingDetails && (
                     <Loader2
                       size={16}
                       className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-blue-500"
@@ -369,28 +542,86 @@ const AdminNewProductView = ({ onFinished }) => {
                   )}
                 </div>
               </div>
+
+              <button
+                type="button"
+                onClick={fetchDefaultData}
+                disabled={fetchingDetails || !formData.diameter}
+                className="w-full bg-slate-800 text-white py-3 text-[10px] font-black uppercase hover:bg-blue-600 transition-all flex items-center justify-center gap-2 rounded-lg"
+              >
+                {fetchingDetails ? (
+                  <Loader2 className="animate-spin" size={14} />
+                ) : (
+                  <Database size={14} />
+                )}{" "}
+                Sync Details
+              </button>
+
+              {(isElbow || isTee) && (
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <div>
+                    <label className={labelStyle}>Angle</label>
+                    <select
+                      className={inputStyle}
+                      value={formData.angle}
+                      onChange={(e) =>
+                        setFormData({ ...formData, angle: e.target.value })
+                      }
+                    >
+                      <option value="">-- Angle --</option>
+                      <option value="90">90°</option>
+                      <option value="45">45°</option>
+                      <option value="30">30°</option>
+                      <option value="22.5">22.5°</option>
+                      <option value="11.25">11.25°</option>
+                    </select>
+                  </div>
+                  {isElbow && (
+                    <div>
+                      <label className={labelStyle}>Radius</label>
+                      <select
+                        className={inputStyle}
+                        value={formData.radius}
+                        onChange={(e) =>
+                          setFormData({ ...formData, radius: e.target.value })
+                        }
+                      >
+                        <option value="">-- R --</option>
+                        <option value="1.5D">1.5D</option>
+                        <option value="3D">3D</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+              {isFlange && (
+                <div className="pt-2">
+                  <label className={labelStyle + " text-blue-600"}>
+                    Bore Dimensions (Ref)
+                  </label>
+                  <div className="p-2 bg-blue-50 border border-blue-100 text-[11px] font-mono text-blue-800 rounded-sm min-h-[36px] flex items-center">
+                    {formData.drilling || "No Bore Data Loaded"}
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="h-px bg-slate-100 my-4"></div>
-
-            {/* Sectie 3: Meta Data */}
-            <div className="grid grid-cols-2 gap-6">
+            {/* KOLOM 3 */}
+            <div className="bg-white border border-slate-200 p-6 space-y-4 shadow-sm rounded-xl">
+              <div className="text-[10px] font-black text-blue-600 uppercase border-b pb-2 mb-4 tracking-widest flex items-center gap-2">
+                <FileText size={14} /> Final Registration
+              </div>
               <div>
-                <label className={labelStyle}>
-                  <FileText size={14} className="inline mr-2 mb-0.5" />
-                  Tekening Nr.
-                </label>
+                <label className={labelStyle}>Drawing Reference</label>
                 <input
-                  type="text"
                   className={inputStyle}
-                  placeholder="bv. 3844-001"
                   value={formData.drawingNr}
                   onChange={(e) =>
                     setFormData({ ...formData, drawingNr: e.target.value })
                   }
+                  placeholder="Optional"
                 />
               </div>
-
               <div>
                 <label className={labelStyle}>Label</label>
                 <select
@@ -407,58 +638,54 @@ const AdminNewProductView = ({ onFinished }) => {
                   <option value="Wavistrong-H">Wavistrong-H</option>
                 </select>
               </div>
-
-              <div className="col-span-2">
-                <label className={`${labelStyle} text-blue-600`}>
-                  <Search size={14} className="inline mr-2 mb-0.5" />
-                  Gegenereerde Product Code
+              <div>
+                <label className={labelStyle + " text-orange-600"}>
+                  Final Product Code
                 </label>
                 <div className="relative">
                   <input
                     readOnly
-                    className="w-full bg-blue-50/50 border-2 border-blue-100 rounded-xl px-4 py-4 text-sm font-black text-blue-800 outline-none"
-                    placeholder="Wordt automatisch gegenereerd..."
+                    className="w-full bg-orange-50 border border-orange-200 rounded-lg px-3 py-3 text-sm font-black text-orange-800 outline-none"
+                    placeholder="ID..."
                     value={formData.productCode}
                   />
                 </div>
               </div>
-
-              <div>
-                <label className={labelStyle}>Voorraad</label>
-                <input
-                  type="number"
-                  className={inputStyle}
-                  value={formData.stock}
-                  onChange={(e) =>
-                    setFormData({ ...formData, stock: e.target.value })
-                  }
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelStyle}>Stock</label>
+                  <input
+                    type="number"
+                    className={inputStyle}
+                    value={formData.stock}
+                    onChange={(e) =>
+                      setFormData({ ...formData, stock: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className={labelStyle}>Price</label>
+                  <input
+                    type="number"
+                    className={inputStyle}
+                    value={formData.price}
+                    onChange={(e) =>
+                      setFormData({ ...formData, price: e.target.value })
+                    }
+                  />
+                </div>
               </div>
-              <div>
-                <label className={labelStyle}>Prijs (€)</label>
-                <input
-                  type="number"
-                  className={inputStyle}
-                  value={formData.price}
-                  onChange={(e) =>
-                    setFormData({ ...formData, price: e.target.value })
-                  }
-                />
-              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full mt-6 bg-blue-700 hover:bg-blue-800 text-white py-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-100 disabled:opacity-50"
+              >
+                <Save size={18} /> Save to Main Database
+              </button>
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-xl shadow-blue-200 disabled:opacity-50"
-            >
-              {loading ? (
-                <Loader2 className="animate-spin" size={18} />
-              ) : (
-                <Save size={18} />
-              )}
-              {loading ? "Opslaan..." : "Opslaan in Database"}
-            </button>
+            {/* EXTRA TECH SPECS ROW */}
+            {renderExtraFields()}
           </form>
         </div>
       </div>
