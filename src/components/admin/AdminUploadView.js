@@ -1,258 +1,83 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   UploadCloud,
   FileText,
-  Database,
   AlertTriangle,
   CheckCircle,
-  ArrowLeft,
-  RefreshCw,
-  Table,
-  Info,
+  X,
+  Database,
+  FileSpreadsheet,
+  Loader2,
+  Ruler,
+  Layers,
 } from "lucide-react";
-import { writeBatch, doc, getDoc, setDoc } from "firebase/firestore";
+import { writeBatch, doc, getDoc } from "firebase/firestore";
 import { db, appId } from "../../config/firebase";
+import {
+  generateProductCode,
+  validateAgainstMatrix,
+  formatProductForSave,
+  validateProductData,
+} from "../../utils/productHelpers";
 
-/**
- * AdminUploadView.js - v2.0 (Matrix Compatible)
- * Bulk upload functionaliteit die aansluit op de nieuwe datastructuur.
- *
- * FEATURES:
- * - Ondersteunt CSV (Excel copy-paste) import.
- * - Genereert automatische Document ID's op basis van de Matrix-logica (TYPE_CONN_PN_ID).
- * - Normaliseert verbindingen (CB/CB -> CB).
- * - Kan direct de 'product_range' matrix updaten bij nieuwe producten.
- */
+const UPLOAD_CONFIG = {
+  fitting: {
+    label: "Fitting Specificaties",
+    icon: <Ruler size={24} />,
+    description: "Upload maten voor bochten, T-stukken, etc.",
+    variants: {
+      cb: {
+        label: "Lijm (CB)",
+        collection: "standard_fitting_specs",
+        headers: ["type", "pressure", "diameter", "TWcb", "BD", "W", "L", "Z"],
+        idPrefix: "_CB_",
+      },
+      tb: {
+        label: "Manchet (TB)",
+        collection: "standard_fitting_specs",
+        headers: ["type", "pressure", "diameter", "TWtb", "BD", "W", "L", "Z"],
+        idPrefix: "_TB_",
+      },
+    },
+  },
+  bell: {
+    label: "Bell Mof (Maten)",
+    icon: <Layers size={24} />,
+    description: "Upload de specifieke maten voor moffen.",
+    variants: {
+      cb: {
+        label: "Lijm Mof (CB)",
+        collection: "cb_dimensions",
+        headers: ["id", "B1", "B2", "BA", "A1"],
+        description: "ID formaat: CB_PN10_ID110",
+      },
+      tb: {
+        label: "Manchet Mof (TB)",
+        collection: "tb_dimensions",
+        headers: ["id", "B1", "B2", "BA", "r1", "alpha"],
+        description: "ID formaat: TB_PN10_ID110",
+      },
+    },
+  },
+};
+
 const AdminUploadView = ({ onBack }) => {
-  const [targetCollection, setTargetCollection] = useState("products");
-  const [rawData, setRawData] = useState("");
+  const [mainCategory, setMainCategory] = useState("fitting");
+  const [subVariant, setSubVariant] = useState("cb");
+  const [jsonInput, setJsonInput] = useState("");
   const [parsedData, setParsedData] = useState([]);
-  const [log, setLog] = useState([]);
+  const [logs, setLogs] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const [updateMatrix, setUpdateMatrix] = useState(true); // Optie om matrix auto-te-vullen
+  const fileInputRef = useRef(null);
+  const [matrix, setMatrix] = useState(null);
+  const [loadingMatrix, setLoadingMatrix] = useState(true);
 
-  // Schema definities voor validatie en ID generatie
-  const TARGETS = {
-    products: {
-      label: "Product Catalogus",
-      collection: "products",
-      required: ["category", "type", "diameter", "pressure", "connection"],
-      idGen: (row) => {
-        // Unieke ID voor product lijst: Categorie_Mof_PN_ID_Timestamp (om conflicten te vermijden in catalogus)
-        const normConn = normalizeConnection(row.connection);
-        return `${row.category}_${normConn}_PN${row.pressure}_ID${
-          row.diameter
-        }_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-      },
-    },
-    cb_dimensions: {
-      label: "CB Maatvoering (B1, B2, ...)",
-      collection: "cb_dimensions",
-      required: ["diameter", "pressure"],
-      idGen: (row) => `CB_PN${row.pressure}_ID${row.diameter}`, // Strikte ID: CB_PN10_ID200
-    },
-    tb_dimensions: {
-      label: "TB Maatvoering (L1, L2, ...)",
-      collection: "tb_dimensions",
-      required: ["diameter", "pressure"],
-      idGen: (row) => `TB_PN${row.pressure}_ID${row.diameter}`,
-    },
-    bore_dimensions: {
-      label: "Bore Dimensions (d, k, b)",
-      collection: "bore_dimensions",
-      required: ["diameter", "pressure"],
-      idGen: (row) => `PN${row.pressure}_ID${row.diameter}`,
-    },
-    fitting_specs: {
-      label: "Fitting Specs (L, Z, etc.)",
-      collection: "fitting_specs",
-      required: ["category", "diameter", "pressure", "connection"],
-      idGen: (row) => {
-        // Strikte ID: TYPE_MOF_PN_ID
-        const type = row.category.split(" ")[0].toUpperCase();
-        const normConn = normalizeConnection(row.connection);
-        return `${type}_${normConn}_PN${row.pressure}_ID${row.diameter}`;
-      },
-    },
-    tolerance_settings: {
-      label: "Tolerantie Instellingen",
-      collection: "tolerance_settings",
-      required: ["category", "parameter"],
-      idGen: (row) => {
-        // ID: Categorie_Mof_PN_ID_Param (Of korter als velden ontbreken)
-        const parts = [row.category];
-        if (row.connection) parts.push(normalizeConnection(row.connection));
-        if (row.pressure) parts.push(`PN${row.pressure}`);
-        if (row.diameter) parts.push(`ID${row.diameter}`);
-        parts.push(row.parameter);
-        return parts.join("_");
-      },
-    },
-  };
+  const currentConfig = UPLOAD_CONFIG[mainCategory].variants[subVariant];
 
-  // Helper: Normaliseer Mof naam (CB/CB -> CB) - CRUCIAAL VOOR MATRIX COMPATIBILITEIT
-  const normalizeConnection = (conn) => {
-    if (!conn) return "UNKNOWN";
-    const c = conn.toUpperCase().trim();
-    if (c === "CB/CB" || c === "CB/CB/CB") return "CB";
-    if (c === "TB/TB" || c === "TB/TB/TB") return "TB";
-    if (c.includes("/")) return c.split("/")[0]; // Fallback: pak eerste deel
-    return c;
-  };
-
-  // CSV Parser (Tab of Komma gescheiden)
-  const parseData = () => {
-    setLog([]);
-    setParsedData([]);
-
-    if (!rawData.trim()) {
-      setLog(["⚠️ Geen data ingevoerd."]);
-      return;
-    }
-
-    try {
-      const rows = rawData.trim().split("\n");
-      if (rows.length < 2)
-        throw new Error("Te weinig data. Voeg een header rij toe.");
-
-      // Headers bepalen (normalize to lowercase keys)
-      const headers = rows[0]
-        .split(/[\t,;]+/)
-        .map((h) => h.trim().toLowerCase().replace(/['"]+/g, ""));
-
-      const result = [];
-      const config = TARGETS[targetCollection];
-
-      // Rows verwerken
-      for (let i = 1; i < rows.length; i++) {
-        const values = rows[i]
-          .split(/[\t,;]+/)
-          .map((v) => v.trim().replace(/['"]+/g, ""));
-
-        if (values.length < 2) continue; // Sla lege regels over
-
-        const item = {};
-        headers.forEach((header, index) => {
-          // Mapping voor veelvoorkomende kolomnamen
-          let key = header;
-          if (key === "pn" || key === "druk" || key === "bar") key = "pressure";
-          if (key === "id" || key === "dn" || key === "maat") key = "diameter";
-          if (key === "type" || key === "product") key = "category";
-          if (key === "mof" || key === "verbinding" || key === "conn")
-            key = "connection";
-          if (key === "param") key = "parameter";
-
-          // Waarde opschonen
-          let val = values[index];
-          if (key === "pressure" && val) val = val.replace("PN", ""); // 'PN10' -> '10'
-
-          item[key] = val;
-        });
-
-        // Validatie
-        const missing = config.required.filter((req) => !item[req]);
-        if (missing.length > 0) {
-          console.warn(
-            `Rij ${i + 1} overgeslagen: mist ${missing.join(", ")}`,
-            item
-          );
-          continue;
-        }
-
-        // Genereer ID
-        item._docId = config.idGen(item);
-        result.push(item);
-      }
-
-      setParsedData(result);
-      setLog([
-        `✅ ${result.length} regels succesvol geparsed. Klaar om te uploaden naar '${config.collection}'.`,
-      ]);
-    } catch (error) {
-      setLog([`❌ Parse fout: ${error.message}`]);
-    }
-  };
-
-  // Upload naar Firestore
-  const handleUpload = async () => {
-    if (parsedData.length === 0) return;
-    setUploading(true);
-    const config = TARGETS[targetCollection];
-
-    // We gebruiken batches (max 500 ops per batch)
-    const batchSize = 450;
-    let batch = writeBatch(db);
-    let count = 0;
-    let batchCount = 0;
-
-    // Voor Matrix Update
-    let matrixUpdates = {};
-    // Structuur: { CB: { 10: { Elbow: [100, 200] } } }
-
-    try {
-      for (const item of parsedData) {
-        // 1. Data Document voorbereiden
+  useEffect(() => {
+    const fetchMatrix = async () => {
+      try {
         const docRef = doc(
-          db,
-          "artifacts",
-          appId,
-          "public",
-          "data",
-          config.collection,
-          item._docId
-        );
-
-        // Verwijder _docId uit de data zelf
-        const { _docId, ...dataToSave } = item;
-
-        // Voeg timestamps toe
-        dataToSave.updatedAt = new Date().toISOString();
-        if (targetCollection === "products")
-          dataToSave.createdAt = new Date().toISOString();
-
-        batch.set(docRef, dataToSave);
-        count++;
-
-        // 2. Matrix Update Verzamelen (Alleen als optie aan staat en relevant)
-        if (
-          updateMatrix &&
-          (targetCollection === "products" ||
-            targetCollection.includes("specs"))
-        ) {
-          const normConn = normalizeConnection(item.connection);
-          const pn = item.pressure;
-          const type = item.category; // bijv 'Elbow'
-          const id = item.diameter;
-
-          if (normConn && pn && type && id) {
-            if (!matrixUpdates[normConn]) matrixUpdates[normConn] = {};
-            if (!matrixUpdates[normConn][pn]) matrixUpdates[normConn][pn] = {};
-            if (!matrixUpdates[normConn][pn][type])
-              matrixUpdates[normConn][pn][type] = new Set();
-
-            matrixUpdates[normConn][pn][type].add(id);
-          }
-        }
-
-        // Commit batch als vol
-        if (count >= batchSize) {
-          await batch.commit();
-          setLog((prev) => [...prev, `💾 Batch ${++batchCount} opgeslagen...`]);
-          batch = writeBatch(db); // Nieuwe batch
-          count = 0;
-        }
-      }
-
-      // Laatste batch
-      if (count > 0) {
-        await batch.commit();
-      }
-
-      // 3. Matrix Daadwerkelijk Updaten
-      if (updateMatrix && Object.keys(matrixUpdates).length > 0) {
-        setLog((prev) => [...prev, `🔄 Matrix bijwerken...`]);
-
-        const matrixRef = doc(
           db,
           "artifacts",
           appId,
@@ -261,214 +86,447 @@ const AdminUploadView = ({ onBack }) => {
           "settings",
           "product_range"
         );
-        const matrixSnap = await getDoc(matrixRef);
-        let currentMatrix = matrixSnap.exists() ? matrixSnap.data() : {};
+        const snap = await getDoc(docRef);
+        if (snap.exists()) setMatrix(snap.data());
+      } catch (err) {
+        console.error("Kon matrix niet laden:", err);
+      } finally {
+        setLoadingMatrix(false);
+      }
+    };
+    fetchMatrix();
+  }, []);
 
-        // Merge updates
-        Object.keys(matrixUpdates).forEach((conn) => {
-          if (!currentMatrix[conn]) currentMatrix[conn] = {};
-          Object.keys(matrixUpdates[conn]).forEach((pn) => {
-            if (!currentMatrix[conn][pn]) currentMatrix[conn][pn] = {};
-            Object.keys(matrixUpdates[conn][pn]).forEach((type) => {
-              const existingIDs = currentMatrix[conn][pn][type] || [];
-              const newIDs = Array.from(matrixUpdates[conn][pn][type]);
-              // Merge en ontdubbel
-              const combined = [...new Set([...existingIDs, ...newIDs])].sort(
-                (a, b) => Number(a) - Number(b)
-              );
-              currentMatrix[conn][pn][type] = combined;
-            });
-          });
-        });
+  const parseCSV = (text) => {
+    const lines = text.split("\n").filter((line) => line.trim() !== "");
+    if (lines.length < 2)
+      throw new Error("CSV bestand is leeg of bevat geen headers.");
+    const headers = lines[0]
+      .split(",")
+      .map((h) => h.trim().replace(/^"|"$/g, ""));
+    const result = [];
+    for (let i = 1; i < lines.length; i++) {
+      const currentLine = lines[i].split(",");
+      if (currentLine.length < headers.length) continue;
+      const obj = {};
+      headers.forEach((header, index) => {
+        let val = currentLine[index]?.trim().replace(/^"|"$/g, "") || "";
+        if (!isNaN(val) && val !== "") val = Number(val);
+        obj[header] = val;
+      });
+      result.push(obj);
+    }
+    return result;
+  };
 
-        await setDoc(matrixRef, currentMatrix);
-        setLog((prev) => [...prev, `✅ Matrix gesynchroniseerd!`]);
+  const handleDownloadTemplate = () => {
+    const csvContent =
+      "data:text/csv;charset=utf-8," + currentConfig.headers.join(",");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `template_${mainCategory}_${subVariant}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const text = evt.target.result;
+        const data = parseCSV(text);
+        setJsonInput(JSON.stringify(data, null, 2));
+        processData(data);
+      } catch (err) {
+        setLogs((prev) => [
+          ...prev,
+          { type: "error", msg: "CSV Fout: " + err.message },
+        ]);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const handleManualParse = () => {
+    const trimmedInput = jsonInput.trim();
+    if (trimmedInput.startsWith("[") || trimmedInput.startsWith("{")) {
+      try {
+        const data = JSON.parse(jsonInput);
+        if (!Array.isArray(data)) throw new Error("JSON moet een array zijn.");
+        processData(data);
+      } catch (e) {
+        setLogs((prev) => [
+          ...prev,
+          { type: "error", msg: "JSON Syntax Fout: " + e.message },
+        ]);
+      }
+    } else {
+      try {
+        const data = parseCSV(jsonInput);
+        processData(data);
+        setLogs((prev) => [
+          ...prev,
+          { type: "info", msg: "Tekst verwerkt als CSV." },
+        ]);
+      } catch (e) {
+        setLogs((prev) => [
+          ...prev,
+          { type: "error", msg: "Ongeldig formaat. Gebruik JSON of CSV." },
+        ]);
+      }
+    }
+  };
+
+  const processData = (data) => {
+    const processed = data.map((item) => {
+      const tempItem = { ...item };
+      let isValid = true;
+      let errorMsg = "";
+      let generatedId = "";
+
+      if (mainCategory === "fitting") {
+        if (!tempItem.type || !tempItem.pressure || !tempItem.diameter) {
+          isValid = false;
+          errorMsg = "Type, Pressure en Diameter zijn verplicht.";
+        } else {
+          const baseType = tempItem.type;
+          if (!baseType.toLowerCase().includes("_socket")) {
+            tempItem.type = `${baseType}_Socket`;
+          }
+          const typeUpper = tempItem.type.toUpperCase();
+          const variantUpper = subVariant.toUpperCase();
+          generatedId = `${typeUpper}_${variantUpper}_PN${tempItem.pressure}_ID${tempItem.diameter}`;
+
+          const matrixCheckItem = {
+            ...tempItem,
+            type: baseType,
+            mofType: variantUpper,
+          };
+          const matrixCheck = validateAgainstMatrix(matrixCheckItem, matrix);
+          if (!matrixCheck.allowed) {
+            isValid = false;
+            errorMsg = matrixCheck.error;
+          }
+        }
+      } else {
+        if (!tempItem.id) {
+          isValid = false;
+          errorMsg = "ID is verplicht (bv. CB_PN10_ID110)";
+        } else {
+          generatedId = tempItem.id;
+          if (!generatedId.toUpperCase().includes("_PN")) {
+            isValid = false;
+            errorMsg = "ID mist PN aanduiding";
+          }
+        }
       }
 
-      setLog((prev) => [
+      return {
+        ...tempItem,
+        _docId: generatedId,
+        _status: isValid ? "valid" : "invalid",
+        _error: errorMsg,
+      };
+    });
+
+    setParsedData(processed);
+    setLogs([
+      {
+        type: "info",
+        msg: `${processed.length} regels geanalyseerd voor ${currentConfig.label}.`,
+      },
+    ]);
+  };
+
+  const handleUpload = async () => {
+    setUploading(true);
+    const batch = writeBatch(db);
+    const validItems = parsedData.filter((i) => i._status === "valid");
+    const collectionName = currentConfig.collection;
+
+    if (validItems.length === 0) {
+      setLogs((prev) => [
         ...prev,
-        `🎉 Klaar! Alle ${parsedData.length} items verwerkt.`,
+        { type: "error", msg: "Geen geldige items om te uploaden." },
       ]);
-      setParsedData([]); // Reset
-      setRawData("");
+      setUploading(false);
+      return;
+    }
+
+    try {
+      validItems.forEach((item) => {
+        const { _status, _error, _docId, ...cleanItem } = item;
+        const ref = doc(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          collectionName,
+          _docId
+        );
+        batch.set(ref, { ...cleanItem, id: _docId });
+      });
+
+      await batch.commit();
+      setLogs((prev) => [
+        ...prev,
+        {
+          type: "success",
+          msg: `Succes: ${validItems.length} items opgeslagen in '${collectionName}'!`,
+        },
+      ]);
+      setParsedData([]);
+      setJsonInput("");
     } catch (error) {
-      console.error(error);
-      setLog((prev) => [...prev, `❌ Upload Fout: ${error.message}`]);
+      console.error("Upload error:", error);
+      setLogs((prev) => [
+        ...prev,
+        { type: "error", msg: "Upload mislukt: " + error.message },
+      ]);
     } finally {
       setUploading(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 w-full p-8 overflow-y-auto custom-scrollbar">
-      {/* HEADER */}
-      <div className="flex items-center justify-between mb-8 max-w-5xl mx-auto w-full">
-        <div className="flex items-center gap-4">
+    <div className="h-full w-full bg-slate-50 overflow-y-auto custom-scrollbar p-8 flex flex-col items-center">
+      <div className="w-full max-w-5xl space-y-6">
+        <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex justify-between items-center">
+          <div>
+            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
+              <UploadCloud className="text-cyan-500" size={28} /> Data Import
+            </h2>
+            <p className="text-sm text-slate-400 font-medium ml-10">
+              Bulk import via Excel/CSV of JSON
+            </p>
+          </div>
           {onBack && (
             <button
               onClick={onBack}
-              className="p-3 bg-white hover:bg-slate-100 rounded-2xl text-slate-500 transition-colors shadow-sm border border-slate-100"
+              className="px-6 py-2.5 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors border border-transparent hover:border-slate-200"
             >
-              <ArrowLeft size={20} />
+              Terug
             </button>
           )}
-          <div>
-            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
-              <UploadCloud className="text-cyan-500" /> Data Upload Center
-            </h2>
-            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">
-              Bulk Import & Matrix Sync
-            </p>
-          </div>
         </div>
-      </div>
 
-      <div className="max-w-5xl mx-auto w-full space-y-8">
-        {/* 1. SELECTIE */}
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
-          <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2">
-            <Database size={16} /> Stap 1: Kies Doel Collectie
+        <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-6">
+          <h3 className="font-black text-slate-700 flex items-center gap-2 border-b border-slate-100 pb-2">
+            <Database size={18} /> 1. Wat wil je uploaden?
           </h3>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {Object.keys(TARGETS).map((key) => (
+          <div className="grid grid-cols-2 gap-4">
+            {Object.entries(UPLOAD_CONFIG).map(([key, conf]) => (
               <button
                 key={key}
                 onClick={() => {
-                  setTargetCollection(key);
+                  setMainCategory(key);
                   setParsedData([]);
-                  setLog([]);
+                  setLogs([]);
                 }}
-                className={`p-4 rounded-xl border text-left transition-all ${
-                  targetCollection === key
-                    ? "bg-cyan-50 border-cyan-500 text-cyan-800 ring-2 ring-cyan-200"
-                    : "bg-slate-50 border-slate-200 text-slate-500 hover:bg-white hover:shadow-md"
+                className={`p-4 rounded-xl border-2 text-left flex items-center gap-4 transition-all ${
+                  mainCategory === key
+                    ? "border-cyan-500 bg-cyan-50 text-cyan-900 shadow-md"
+                    : "border-slate-100 hover:border-slate-300 text-slate-500"
                 }`}
               >
-                <div className="font-bold text-sm mb-1">
-                  {TARGETS[key].label}
+                <div
+                  className={`p-3 rounded-full ${
+                    mainCategory === key ? "bg-cyan-200" : "bg-slate-100"
+                  }`}
+                >
+                  {conf.icon}
                 </div>
-                <div className="text-[10px] opacity-70 font-mono">
-                  {TARGETS[key].collection}
+                <div>
+                  <span className="font-black block text-sm uppercase tracking-wide">
+                    {conf.label}
+                  </span>
+                  <span className="text-xs opacity-70">{conf.description}</span>
                 </div>
               </button>
             ))}
           </div>
-
-          {/* Matrix Optie */}
-          {(targetCollection === "products" ||
-            targetCollection.includes("specs")) && (
-            <div
-              className="mt-4 flex items-center gap-2 p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-800 text-xs font-bold cursor-pointer"
-              onClick={() => setUpdateMatrix(!updateMatrix)}
-            >
-              <div
-                className={`w-4 h-4 rounded border flex items-center justify-center ${
-                  updateMatrix
-                    ? "bg-emerald-500 border-emerald-600 text-white"
-                    : "bg-white border-emerald-300"
-                }`}
-              >
-                {updateMatrix && <CheckCircle size={12} />}
-              </div>
-              Automatisch Product Matrix (Beschikbaarheid) bijwerken met deze
-              data?
+          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 block">
+              Kies Variant
+            </span>
+            <div className="flex gap-4">
+              {Object.entries(UPLOAD_CONFIG[mainCategory].variants).map(
+                ([key, variant]) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setSubVariant(key);
+                      setParsedData([]);
+                    }}
+                    className={`px-6 py-3 rounded-xl text-sm font-bold transition-all border-2 ${
+                      subVariant === key
+                        ? "bg-white border-cyan-500 text-cyan-700 shadow-sm"
+                        : "bg-transparent border-transparent text-slate-500 hover:bg-white hover:border-slate-200"
+                    }`}
+                  >
+                    {variant.label}
+                  </button>
+                )
+              )}
             </div>
-          )}
-        </div>
-
-        {/* 2. INPUT */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col">
-            <h3 className="font-bold text-slate-700 mb-2 flex items-center gap-2">
-              <FileText size={16} /> Stap 2: Plak Data (Excel/CSV)
-            </h3>
-            <p className="text-xs text-slate-400 mb-4">
-              Kopieer data uit Excel inclusief headers. Vereiste kolommen voor{" "}
-              <strong>{TARGETS[targetCollection].label}</strong>:
-              <br />
-              <span className="font-mono text-cyan-600">
-                {TARGETS[targetCollection].required.join(", ")}
+          </div>
+          <div className="flex justify-between items-center pt-2">
+            <div className="text-xs text-slate-500 font-mono">
+              Doel:{" "}
+              <span className="font-bold text-slate-700">
+                /public/data/{currentConfig.collection}
               </span>
-            </p>
-            <textarea
-              className="flex-1 w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-mono text-xs outline-none focus:border-cyan-500 min-h-[300px]"
-              placeholder={`Category\tConnection\tPressure\tDiameter\t...\nElbow\tCB\tPN10\t200\t...`}
-              value={rawData}
-              onChange={(e) => setRawData(e.target.value)}
-            />
+            </div>
             <button
-              onClick={parseData}
-              className="mt-4 w-full bg-slate-800 text-white py-3 rounded-xl font-bold hover:bg-slate-700 transition-all"
+              onClick={handleDownloadTemplate}
+              className="flex items-center gap-2 bg-slate-800 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-slate-700 transition-all shadow-lg shadow-slate-200"
             >
-              Valideer & Parse Data
+              <FileSpreadsheet size={16} /> Download {currentConfig.label}{" "}
+              Template
             </button>
           </div>
+        </div>
 
-          {/* 3. PREVIEW & LOG */}
-          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col">
-            <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2">
-              <RefreshCw size={16} /> Stap 3: Resultaat & Upload
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col h-[600px]">
+            <h3 className="font-black text-slate-700 mb-4 flex items-center gap-2">
+              <FileText size={18} /> 2. Data Invoeren
             </h3>
-
-            <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 overflow-y-auto max-h-[300px] min-h-[200px]">
-              {log.map((l, i) => (
+            <div
+              onClick={() => fileInputRef.current.click()}
+              className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:bg-slate-50 hover:border-cyan-400 transition-colors mb-4 group shrink-0"
+            >
+              <UploadCloud
+                size={32}
+                className="mx-auto text-slate-300 group-hover:text-cyan-500 mb-2 transition-colors"
+              />
+              <p className="text-xs font-bold text-slate-500 group-hover:text-cyan-700">
+                Klik hier om CSV te uploaden
+              </p>
+              <input
+                type="file"
+                accept=".csv,.txt"
+                ref={fileInputRef}
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+            </div>
+            <div className="relative flex items-center py-2 shrink-0">
+              <div className="flex-grow border-t border-slate-100"></div>
+              <span className="flex-shrink-0 mx-4 text-slate-300 text-[10px] font-bold uppercase">
+                Of plak data
+              </span>
+              <div className="flex-grow border-t border-slate-100"></div>
+            </div>
+            <textarea
+              className="flex-1 w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-mono text-xs focus:ring-2 focus:ring-cyan-500 outline-none resize-none"
+              placeholder={`Plak hier je CSV data...\n${currentConfig.headers.join(
+                ","
+              )}`}
+              value={jsonInput}
+              onChange={(e) => setJsonInput(e.target.value)}
+            />
+            <button
+              onClick={handleManualParse}
+              disabled={!jsonInput}
+              className="mt-4 w-full bg-slate-800 text-white py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-700 disabled:opacity-50 shrink-0"
+            >
+              Verwerk Tekst
+            </button>
+          </div>
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col h-[600px]">
+            <h3 className="font-black text-slate-700 mb-4 flex items-center gap-2 justify-between">
+              <span className="flex items-center gap-2">
+                <CheckCircle size={18} /> 3. Validatie
+              </span>
+              {mainCategory === "fitting" && (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded ${
+                    loadingMatrix
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-emerald-100 text-emerald-700"
+                  }`}
+                >
+                  {loadingMatrix ? "Matrix laden..." : "Matrix actief"}
+                </span>
+              )}
+            </h3>
+            <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50 rounded-xl border border-slate-200 p-2 space-y-2">
+              {parsedData.length === 0 && (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                  <Database size={48} className="mb-2 opacity-20" />
+                  <p className="text-xs font-bold">Wachtend op data...</p>
+                </div>
+              )}
+              {parsedData.map((item, i) => (
                 <div
                   key={i}
-                  className="text-xs font-mono mb-1 border-b border-slate-100 pb-1 last:border-0"
+                  className={`p-3 rounded-lg border text-xs flex justify-between items-start ${
+                    item._status === "valid"
+                      ? "bg-white border-slate-200"
+                      : "bg-red-50 border-red-100"
+                  }`}
                 >
-                  {l}
-                </div>
-              ))}
-              {parsedData.length > 0 && (
-                <div className="mt-4">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase mb-2">
-                    Preview (Eerste 3 items)
-                  </h4>
-                  {parsedData.slice(0, 3).map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-white p-2 rounded border border-slate-200 mb-2 text-[10px]"
-                    >
-                      <div className="font-bold text-cyan-600 mb-1">
-                        ID: {item._docId}
-                      </div>
-                      <div className="grid grid-cols-2 gap-1 opacity-70">
-                        {Object.entries(item)
-                          .slice(0, 6)
-                          .map(
-                            ([k, v]) =>
-                              k !== "_docId" && (
-                                <div key={k}>
-                                  {k}: {v}
-                                </div>
-                              )
-                          )}
-                      </div>
+                  <div className="flex-1">
+                    <span className="font-bold block text-slate-700">
+                      {item._docId || "Onbekend ID"}
+                    </span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {Object.entries(item)
+                        .filter(
+                          ([k]) =>
+                            !k.startsWith("_") && k !== "id" && k !== "type"
+                        )
+                        .slice(0, 4)
+                        .map(([k, v]) => (
+                          <span
+                            key={k}
+                            className="bg-slate-100 px-1.5 py-0.5 rounded text-[9px] text-slate-500"
+                          >
+                            {k}: {v}
+                          </span>
+                        ))}
                     </div>
-                  ))}
-                  {parsedData.length > 3 && (
-                    <div className="text-center text-xs text-slate-400 italic">
-                      ... en nog {parsedData.length - 3} items.
-                    </div>
+                    {item._error && (
+                      <span className="block text-red-500 font-bold mt-1 flex items-center gap-1">
+                        <AlertTriangle size={10} /> {item._error}
+                      </span>
+                    )}
+                  </div>
+                  {item._status === "valid" ? (
+                    <CheckCircle
+                      size={16}
+                      className="text-emerald-500 shrink-0"
+                    />
+                  ) : (
+                    <X size={16} className="text-red-500 shrink-0" />
                   )}
                 </div>
-              )}
+              ))}
             </div>
-
-            <button
-              onClick={handleUpload}
-              disabled={uploading || parsedData.length === 0}
-              className="w-full bg-cyan-500 text-white py-3 rounded-xl font-bold hover:bg-cyan-600 transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-cyan-200"
-            >
-              {uploading ? (
-                <RefreshCw className="animate-spin" size={18} />
-              ) : (
-                <UploadCloud size={18} />
-              )}
-              {uploading
-                ? "Bezig met uploaden..."
-                : `Upload ${parsedData.length} Items naar Database`}
-            </button>
+            <div className="mt-4 pt-4 border-t border-slate-100 shrink-0">
+              <button
+                onClick={handleUpload}
+                disabled={
+                  uploading ||
+                  parsedData.filter((i) => i._status === "valid").length === 0
+                }
+                className="w-full bg-cyan-600 text-white py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-cyan-700 disabled:opacity-50 flex justify-center gap-2 shadow-lg shadow-cyan-200"
+              >
+                {uploading ? (
+                  <Loader2 className="animate-spin" size={16} />
+                ) : (
+                  <UploadCloud size={16} />
+                )}{" "}
+                Start Upload
+              </button>
+            </div>
           </div>
         </div>
       </div>

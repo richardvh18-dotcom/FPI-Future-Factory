@@ -1,141 +1,242 @@
-import React from "react";
-import {
-  Filter,
-  Info,
-  ChevronLeft,
-  ChevronRight,
-  RotateCcw,
-} from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Filter, X, ChevronRight, ChevronLeft, Lightbulb } from "lucide-react";
 
-/**
- * Sidebar.js - Hersteld & Beveiligd tegen 'undefined' errors.
- */
+// De lijst met tips
+const TIPS = [
+  "Gebruik de filters om snel specifieke fittingen te vinden.",
+  "Wist je dat je datasheets direct als PDF kunt exporteren?",
+  "In het Admin Dashboard kun je nieuwe producten toevoegen.",
+  "Gebruik de Calculator om nauwkeurig Z-maten te berekenen.",
+  "Controleer regelmatig de voorraadstatus in het overzicht.",
+  "Je kunt de sidebar inklappen voor meer schermruimte.",
+  "Dubbelklik op een product voor alle technische details.",
+];
+
+// Sub-component voor de wisselende tip
+const SidebarTip = () => {
+  const [index, setIndex] = useState(0);
+  const [fade, setFade] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setFade(false); // Start fade out
+      setTimeout(() => {
+        setIndex((prev) => (prev + 1) % TIPS.length);
+        setFade(true); // Start fade in
+      }, 300); // Wacht kort voor de wissel
+    }, 10000); // 10 seconden
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="p-4 bg-slate-50 border-t border-slate-200">
+      <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 relative shadow-sm h-28 flex flex-col">
+        {/* Icoon en Titel */}
+        <div className="flex items-center gap-2 mb-2 text-blue-600">
+          <Lightbulb size={16} className="fill-blue-100" />
+          <span className="text-[10px] font-black uppercase tracking-wider">
+            Wist je dat?
+          </span>
+        </div>
+
+        {/* Tekst container met vaste hoogte en animatie */}
+        <div
+          className={`flex-1 flex items-center transition-opacity duration-300 ${
+            fade ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <p className="text-xs font-medium text-slate-600 leading-relaxed">
+            {TIPS[index]}
+          </p>
+        </div>
+
+        {/* Decoratief pijltje voor ballon effect */}
+        <div className="absolute -bottom-2 left-6 w-3 h-3 bg-blue-50 border-b border-r border-blue-100 transform rotate-45"></div>
+      </div>
+    </div>
+  );
+};
+
 const Sidebar = ({
-  filters = {},
+  filters,
   setFilters,
-  uniqueTypes = [],
-  uniqueDiameters = [],
-  uniquePressures = [],
-  uniqueConnections = [],
-  uniqueAngles = [],
-  uniqueLabels = [],
+  uniqueTypes,
+  uniqueDiameters,
+  uniquePressures,
+  uniqueConnections,
+  uniqueAngles,
+  uniqueLabels,
   isOpen,
   toggleSidebar,
 }) => {
-  const resetFilters = () => {
+  const handleReset = () => {
     setFilters({
-      type: "Alle",
-      diameter: "Alle",
-      pressure: "Alle",
-      connection: "Alle",
-      angle: "Alle",
-      productLabel: "Alle",
+      type: "-",
+      diameter: "-",
+      pressure: "-",
+      connection: "-",
+      angle: "-",
+      productLabel: "-",
     });
   };
 
-  // Sub-component voor een filtergroep met extra beveiliging op 'options'
-  const FilterGroup = ({ label, value, options = [], field }) => (
-    <div className="space-y-1 mb-4 animate-in">
-      <div className="flex items-center justify-between text-left px-1">
-        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
-          {label}
-        </label>
-      </div>
-      <select
-        value={value || "Alle"}
-        onChange={(e) => setFilters({ ...filters, [field]: e.target.value })}
-        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-[11px] font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all cursor-pointer hover:border-blue-200"
-      >
-        {/* Beveiliging: als options undefined is, wordt een lege array gebruikt door de default param */}
-        {Array.isArray(options) &&
-          options.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt === "Alle" ? `Alle ${label}` : opt}
-            </option>
-          ))}
-      </select>
-    </div>
-  );
+  const handleFilterChange = (key, value) => {
+    setFilters((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // Helper voor select class - Aangepast voor compactere weergave
+  const selectClass =
+    "w-full bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-md py-1.5 px-2 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 block";
+  const labelClass =
+    "block mb-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider";
 
   return (
-    <aside
-      className={`bg-white border-r border-slate-200 transition-all duration-300 relative z-20 ${
-        isOpen ? "w-64" : "w-12"
+    <div
+      className={`bg-white border-r border-slate-200 flex flex-col transition-all duration-300 ease-in-out relative ${
+        isOpen ? "w-64" : "w-0"
       }`}
     >
+      {/* Toggle Button (Buiten de sidebar als hij dicht is, binnen als open) */}
       <button
         onClick={toggleSidebar}
-        className="absolute -right-3 top-20 bg-white border border-slate-200 rounded-full p-1 shadow-md z-30 hover:text-blue-600 transition-colors"
+        className={`absolute top-4 -right-3 z-50 bg-white border border-slate-200 rounded-full p-1 shadow-sm hover:bg-slate-50 text-slate-500 ${
+          !isOpen && "translate-x-full right-[-12px]"
+        }`}
       >
-        {isOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+        {isOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
       </button>
 
-      {isOpen && (
-        <div className="p-4 h-full flex flex-col animate-in">
-          <div className="flex items-center justify-between mb-6 text-left border-b pb-4 border-slate-50 px-1">
-            <h3 className="text-xs font-black text-slate-800 uppercase italic flex items-center gap-2">
-              <Filter size={14} className="text-blue-600" />
-              Database Filters
-            </h3>
-            <button
-              onClick={resetFilters}
-              className="text-slate-300 hover:text-red-500 transition-colors p-1"
-              title="Filters herstellen"
+      <div
+        className={`flex-1 flex flex-col overflow-hidden ${
+          !isOpen && "hidden"
+        }`}
+      >
+        {/* Header - Compactere padding */}
+        <div className="p-4 border-b border-slate-100 flex justify-between items-center shrink-0">
+          <h3 className="font-black text-slate-800 flex items-center gap-2 text-sm">
+            <Filter size={16} className="text-blue-600" />
+            Filters
+          </h3>
+          <button
+            onClick={handleReset}
+            className="text-[10px] font-bold text-red-500 hover:bg-red-50 px-2 py-1 rounded transition-colors flex items-center gap-1"
+          >
+            <X size={10} /> Reset
+          </button>
+        </div>
+
+        {/* Filter Content - Compactere spacing */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+          {/* 1. Type */}
+          <div>
+            <label className={labelClass}>Product Type</label>
+            <select
+              value={filters.type}
+              onChange={(e) => handleFilterChange("type", e.target.value)}
+              className={selectClass}
             >
-              <RotateCcw size={13} />
-            </button>
+              <option value="-">-</option>
+              {uniqueTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <div className="flex-1 space-y-1 overflow-y-auto custom-scrollbar pb-10 text-left pr-1">
-            <FilterGroup
-              label="Product Type"
-              value={filters?.type}
-              options={uniqueTypes}
-              field="type"
-            />
-            <FilterGroup
-              label="Product Serie"
-              value={filters?.productLabel}
-              options={uniqueLabels}
-              field="productLabel"
-            />
-            <FilterGroup
-              label="Diameter (ID)"
-              value={filters?.diameter}
-              options={uniqueDiameters}
-              field="diameter"
-            />
-            <FilterGroup
-              label="Drukklasse (PN)"
-              value={filters?.pressure}
-              options={uniquePressures}
-              field="pressure"
-            />
-            <FilterGroup
-              label="Verbinding"
-              value={filters?.connection}
-              options={uniqueConnections}
-              field="connection"
-            />
-            <FilterGroup
-              label="Hoek (°)"
-              value={filters?.angle}
-              options={uniqueAngles}
-              field="angle"
-            />
+          {/* 2. Diameter */}
+          <div>
+            <label className={labelClass}>Diameter (DN)</label>
+            <select
+              value={filters.diameter}
+              onChange={(e) => handleFilterChange("diameter", e.target.value)}
+              className={selectClass}
+            >
+              <option value="-">-</option>
+              {uniqueDiameters.map((d) => (
+                <option key={d} value={d}>
+                  DN {d}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <div className="mt-4 pt-4 border-t border-slate-50">
-            <div className="flex items-start gap-2 bg-blue-50 p-3 rounded-xl border border-blue-100/50 shadow-inner">
-              <Info size={14} className="text-blue-500 mt-0.5 flex-shrink-0" />
-              <p className="text-[8px] font-bold text-blue-700 leading-tight uppercase tracking-tight">
-                Data is gekoppeld aan de live database.
-              </p>
-            </div>
+          {/* 3. Druk */}
+          <div>
+            <label className={labelClass}>Drukklasse (PN)</label>
+            <select
+              value={filters.pressure}
+              onChange={(e) => handleFilterChange("pressure", e.target.value)}
+              className={selectClass}
+            >
+              <option value="-">-</option>
+              {uniquePressures.map((p) => (
+                <option key={p} value={p}>
+                  PN {p}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 4. Verbinding */}
+          <div>
+            <label className={labelClass}>Verbinding</label>
+            <select
+              value={filters.connection}
+              onChange={(e) => handleFilterChange("connection", e.target.value)}
+              className={selectClass}
+            >
+              <option value="-">-</option>
+              {uniqueConnections.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 5. Hoek */}
+          <div>
+            <label className={labelClass}>Hoek</label>
+            <select
+              value={filters.angle}
+              onChange={(e) => handleFilterChange("angle", e.target.value)}
+              className={selectClass}
+            >
+              <option value="-">-</option>
+              {uniqueAngles.map((a) => (
+                <option key={a} value={a}>
+                  {a}°
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 6. Label */}
+          <div>
+            <label className={labelClass}>Label</label>
+            <select
+              value={filters.productLabel}
+              onChange={(e) =>
+                handleFilterChange("productLabel", e.target.value)
+              }
+              className={selectClass}
+            >
+              <option value="-">-</option>
+              {uniqueLabels.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
-      )}
-    </aside>
+
+        {/* Footer Info / Tip met vaste hoogte */}
+        <SidebarTip />
+      </div>
+    </div>
   );
 };
 

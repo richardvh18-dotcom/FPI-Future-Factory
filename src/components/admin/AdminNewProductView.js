@@ -1,15 +1,6 @@
 import React, { useState, useEffect } from "react";
-import {
-  doc,
-  setDoc,
-  collection,
-  query,
-  where,
-  getDocs,
-  getDoc,
-  limit,
-} from "firebase/firestore";
-import { db, appId, auth } from "../../config/firebase";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+import { db, appId } from "../../config/firebase";
 import {
   Save,
   X,
@@ -21,6 +12,7 @@ import {
   Ruler,
 } from "lucide-react";
 
+// Importeer de helpers
 import {
   generateProductCode,
   validateProductData,
@@ -31,7 +23,7 @@ const AdminNewProductView = ({ onFinished }) => {
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
 
-  // State voor dynamische configuratie opties
+  // State voor opties uit database
   const [configOptions, setConfigOptions] = useState({
     types: [],
     connections: [],
@@ -56,7 +48,6 @@ const AdminNewProductView = ({ onFinished }) => {
     price: 0,
   });
 
-  // Helpers voor conditionele weergave
   const isFlange =
     formData.type &&
     ["Flange", "Blind Flange", "Stub Flange"].some((t) =>
@@ -65,7 +56,7 @@ const AdminNewProductView = ({ onFinished }) => {
   const isElbow = formData.type && formData.type.includes("Elbow");
   const isTee = formData.type && formData.type.includes("Tee");
 
-  // --- 0. LAAD CONFIGURATIE (Opties voor dropdowns) ---
+  // --- 1. CONFIGURATIE LADEN (Opties) ---
   useEffect(() => {
     const fetchConfig = async () => {
       try {
@@ -79,7 +70,6 @@ const AdminNewProductView = ({ onFinished }) => {
           "general_config"
         );
         const snapshot = await getDoc(configRef);
-
         if (snapshot.exists()) {
           const data = snapshot.data();
           setConfigOptions({
@@ -89,13 +79,13 @@ const AdminNewProductView = ({ onFinished }) => {
           });
         }
       } catch (error) {
-        console.error("Fout bij laden configuratie:", error);
+        console.error("Config laadfout:", error);
       }
     };
     fetchConfig();
   }, []);
 
-  // --- 1. FILTER DIAMETERS UIT PRODUCT RANGE MATRIX ---
+  // --- 2. DIAMETERS UIT MATRIX HALEN ---
   useEffect(() => {
     const fetchValidDiameters = async () => {
       if (!formData.type || !formData.mofType || !formData.pressure) {
@@ -118,24 +108,25 @@ const AdminNewProductView = ({ onFinished }) => {
 
         if (docSnap.exists()) {
           const matrix = docSnap.data();
-
-          // Gebruik de genormaliseerde sleutel voor de matrix lookup
-          // Als gebruiker TB/TB kiest, zoeken we in matrix onder "TB"
-          const cleanMof = formData.mofType.split("/")[0].toUpperCase().trim();
-
+          const connKey = formData.mofType.split("/")[0].toUpperCase().trim();
           const pnKey = String(formData.pressure);
           const typeKey = formData.type;
 
-          const diameters = matrix?.[cleanMof]?.[pnKey]?.[typeKey] || [];
+          // Zoek op meerdere plekken (Base, Socket, Spiggot)
+          const baseRange = matrix?.[connKey]?.[pnKey]?.[typeKey] || [];
+          const socketRange =
+            matrix?.[connKey]?.[pnKey]?.[`${typeKey}_Socket`] || [];
 
-          if (Array.isArray(diameters) && diameters.length > 0) {
-            setAvailableDiameters(diameters.sort((a, b) => a - b));
+          const allDiameters = [...new Set([...baseRange, ...socketRange])];
+
+          if (allDiameters.length > 0) {
+            setAvailableDiameters(allDiameters.sort((a, b) => a - b));
           } else {
             setAvailableDiameters([]);
           }
         }
       } catch (err) {
-        console.error("Fout bij ophalen matrix data:", err);
+        console.error("Matrix fout:", err);
       } finally {
         setFetching(false);
       }
@@ -144,7 +135,7 @@ const AdminNewProductView = ({ onFinished }) => {
     fetchValidDiameters();
   }, [formData.type, formData.mofType, formData.pressure]);
 
-  // --- 2. GENERATE PRODUCT CODE ---
+  // --- 3. AUTO CODE GENERATOR ---
   useEffect(() => {
     const newCode = generateProductCode(formData);
     if (newCode !== formData.productCode) {
@@ -160,73 +151,11 @@ const AdminNewProductView = ({ onFinished }) => {
     formData.label,
   ]);
 
-  // --- 3. HAAL AANVULLENDE DATA OPHALEN ---
-  const fetchDefaultData = async () => {
-    if (!formData.diameter || !formData.pressure) return;
-
-    setFetching(true);
-    try {
-      let updatedData = {};
-
-      const specQuery = query(
-        collection(
-          db,
-          "artifacts",
-          appId,
-          "public",
-          "data",
-          "standard_fitting_specs"
-        ),
-        where("type", "==", formData.type),
-        where("diameter", "==", Number(formData.diameter)),
-        limit(1)
-      );
-      try {
-        const specSnap = await getDocs(specQuery);
-        if (!specSnap.empty) {
-          const d = specSnap.docs[0].data();
-          if (d.drawingNr) updatedData.drawingNr = d.drawingNr;
-        }
-      } catch (e) {
-        /* negeer */
-      }
-
-      if (isFlange) {
-        const boreQuery = query(
-          collection(
-            db,
-            "artifacts",
-            appId,
-            "public",
-            "data",
-            "bore_dimensions"
-          ),
-          where("dn", "==", Number(formData.diameter)),
-          where("pn", "==", Number(formData.pressure)),
-          limit(1)
-        );
-        const boreSnap = await getDocs(boreQuery);
-
-        if (!boreSnap.empty) {
-          const b = boreSnap.docs[0].data();
-          updatedData.drilling = `PCD ${b.pcd} / ${b.holes} x M${
-            b.thread || b.bolt
-          }`;
-        }
-      }
-
-      setFormData((prev) => ({ ...prev, ...updatedData }));
-    } catch (err) {
-      console.error("Fout bij ophalen details:", err);
-    } finally {
-      setFetching(false);
-    }
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
 
+    // Validatie via Helper
     const validation = validateProductData(formData);
     if (!validation.isValid) {
       alert("Let op:\n" + validation.errors.join("\n"));
@@ -234,7 +163,8 @@ const AdminNewProductView = ({ onFinished }) => {
       return;
     }
 
-    const productToSave = formatProductForSave(formData);
+    // Formatteren via Helper
+    const dataToSave = formatProductForSave(formData);
 
     try {
       await setDoc(
@@ -245,27 +175,29 @@ const AdminNewProductView = ({ onFinished }) => {
           "public",
           "data",
           "products",
-          productToSave.id
+          dataToSave.id
         ),
-        productToSave
+        dataToSave
       );
-      alert("✅ Product succesvol aangemaakt!");
-      onFinished();
-    } catch (err) {
-      alert("Fout bij opslaan: " + err.message);
+
+      alert("✅ Product succesvol toegevoegd aan de hoofddatabase!");
+      if (onFinished) onFinished();
+    } catch (error) {
+      console.error("Error saving:", error);
+      alert("Fout bij opslaan: " + error.message);
     } finally {
       setLoading(false);
     }
   };
 
   const inputStyle =
-    "w-full p-2 bg-white border border-slate-300 rounded-sm text-sm outline-none focus:border-blue-600 appearance-none font-medium";
+    "w-full bg-slate-50 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all placeholder:text-slate-300";
   const labelStyle =
-    "block text-[11px] font-black text-slate-500 uppercase mb-1 tracking-tight";
+    "block text-xs font-black text-slate-400 uppercase tracking-widest mb-2 ml-1";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-      <div className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl border border-white/50 overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl border border-white/50 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="bg-slate-50 px-8 py-6 border-b border-slate-100 flex justify-between items-center shrink-0">
           <div>
@@ -287,147 +219,145 @@ const AdminNewProductView = ({ onFinished }) => {
 
         {/* Form Content */}
         <div className="p-8 overflow-y-auto custom-scrollbar">
-          <form
-            onSubmit={handleSubmit}
-            className="grid grid-cols-1 md:grid-cols-3 gap-8"
-          >
-            {/* KOLOM 1: REFERENTIE SELECTIE */}
-            <div className="bg-white border border-slate-200 p-6 space-y-4 shadow-sm rounded-xl">
-              <div className="text-[10px] font-black text-blue-600 uppercase border-b pb-2 mb-4 tracking-widest flex items-center gap-2">
-                <Database size={14} /> Specification Source
-              </div>
-
-              <div>
-                <label className={labelStyle}>Product Type</label>
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {/* Sectie 1: Basis Info */}
+            <div className="grid grid-cols-2 gap-6">
+              <div className="col-span-2">
+                <label className={labelStyle}>
+                  <Settings size={14} className="inline mr-2 mb-0.5" />
+                  Type Fitting
+                </label>
                 <select
-                  required
                   className={inputStyle}
                   value={formData.type}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      type: e.target.value,
-                      diameter: "",
-                    })
+                    setFormData({ ...formData, type: e.target.value })
                   }
+                  required
                 >
-                  <option value="">-- Choose Type --</option>
-                  {configOptions.types.length > 0 ? (
-                    configOptions.types.map((type) => (
-                      <option key={type} value={type}>
-                        {type}
+                  <option value="">-- Selecteer Type --</option>
+                  {/* Filter socket types eruit voor de gebruiker */}
+                  {configOptions.types
+                    .filter(
+                      (t) => !t.includes("_Socket") && !t.includes("_Spiggot")
+                    )
+                    .map((t) => (
+                      <option key={t} value={t}>
+                        {t}
                       </option>
-                    ))
-                  ) : (
-                    <>
-                      <option value="Elbow">Elbow</option>
-                      <option value="Tee">Tee</option>
-                      <option value="Coupling">Coupling</option>
-                      <option value="Flange">Flange</option>
-                      <option value="Blind Flange">Blind Flange</option>
-                      <option value="Stub Flange">Stub Flange</option>
-                    </>
-                  )}
+                    ))}
                 </select>
               </div>
 
-              <div>
-                <label className={labelStyle}>Mof Type</label>
-                <select
-                  required
-                  className={inputStyle}
-                  value={formData.mofType}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      mofType: e.target.value,
-                      diameter: "",
-                    })
-                  }
-                >
-                  <option value="">-- Choose Mof --</option>
-                  {configOptions.connections.length > 0 ? (
-                    configOptions.connections.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option value="CB">CB (Lijm)</option>
-                      <option value="TB">TB (Manchet)</option>
-                      <option value="CB/CB">CB/CB</option>
-                      <option value="TB/TB">TB/TB</option>
-                      <option value="FL">FL (Flens)</option>
-                    </>
-                  )}
-                </select>
-              </div>
+              {/* Conditional Fields based on Type */}
+              {(isElbow || isTee) && (
+                <>
+                  <div>
+                    <label className={labelStyle}>Mof Type</label>
+                    <select
+                      className={inputStyle}
+                      value={formData.mofType}
+                      onChange={(e) =>
+                        setFormData({ ...formData, mofType: e.target.value })
+                      }
+                    >
+                      <option value="">-- Select --</option>
+                      {configOptions.connections.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelStyle}>Hoek (Graden)</label>
+                    <select
+                      className={inputStyle}
+                      value={formData.angle}
+                      onChange={(e) =>
+                        setFormData({ ...formData, angle: e.target.value })
+                      }
+                    >
+                      <option value="">-- Select --</option>
+                      <option value="90">90°</option>
+                      <option value="45">45°</option>
+                      <option value="30">30°</option>
+                      <option value="22.5">22.5°</option>
+                      <option value="11.25">11.25°</option>
+                    </select>
+                  </div>
+                </>
+              )}
 
+              {isElbow && (
+                <div className="col-span-2">
+                  <label className={labelStyle}>Radius (R)</label>
+                  <select
+                    className={inputStyle}
+                    value={formData.radius}
+                    onChange={(e) =>
+                      setFormData({ ...formData, radius: e.target.value })
+                    }
+                  >
+                    <option value="">-- Select --</option>
+                    <option value="1.5D">1.5D</option>
+                    <option value="3D">3D</option>
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="h-px bg-slate-100 my-4"></div>
+
+            {/* Sectie 2: Specificaties */}
+            <div className="grid grid-cols-2 gap-6">
               <div>
-                <label className={labelStyle}>Pressure (PN)</label>
+                <label className={labelStyle}>
+                  <Ruler size={14} className="inline mr-2 mb-0.5" />
+                  Drukklasse (PN)
+                </label>
                 <select
-                  required
                   className={inputStyle}
                   value={formData.pressure}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      pressure: e.target.value,
-                      diameter: "",
-                    })
+                    setFormData({ ...formData, pressure: e.target.value })
                   }
+                  required
                 >
-                  <option value="">-- Choose PN --</option>
-                  {configOptions.pns.length > 0 ? (
-                    configOptions.pns.map((pn) => (
-                      <option key={pn} value={pn}>
-                        PN {pn}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option value="6">PN 6</option>
-                      <option value="10">PN 10</option>
-                      <option value="16">PN 16</option>
-                    </>
-                  )}
+                  <option value="">-- Select PN --</option>
+                  {configOptions.pns.map((pn) => (
+                    <option key={pn} value={pn}>
+                      PN {pn}
+                    </option>
+                  ))}
                 </select>
-              </div>
-            </div>
-
-            {/* KOLOM 2: DYNAMISCHE PARAMETERS */}
-            <div className="bg-white border border-slate-200 p-6 space-y-4 shadow-sm rounded-xl">
-              <div className="text-[10px] font-black text-blue-600 uppercase border-b pb-2 mb-4 tracking-widest flex items-center gap-2">
-                <Search size={14} /> Validated Options
               </div>
 
               <div>
-                <label className={labelStyle}>Available Diameters</label>
+                <label className={labelStyle}>
+                  <Ruler size={14} className="inline mr-2 mb-0.5" />
+                  Diameter (DN)
+                </label>
                 <div className="relative">
                   <select
-                    required
-                    className={`${inputStyle} ${
-                      availableDiameters.length > 0
-                        ? "border-blue-500 bg-blue-50/20"
-                        : ""
-                    }`}
+                    className={inputStyle}
                     value={formData.diameter}
                     onChange={(e) =>
                       setFormData({ ...formData, diameter: e.target.value })
                     }
-                    disabled={availableDiameters.length === 0}
+                    disabled={!formData.pressure || fetching}
+                    required
                   >
                     <option value="">
                       {fetching
-                        ? "Checking Matrix..."
+                        ? "Laden..."
                         : availableDiameters.length > 0
                         ? "-- Select DN --"
-                        : "Not in Matrix"}
+                        : "Geen opties"}
                     </option>
                     {availableDiameters.map((d) => (
                       <option key={d} value={d}>
-                        DN {d} mm
+                        DN {d}
                       </option>
                     ))}
                   </select>
@@ -439,86 +369,25 @@ const AdminNewProductView = ({ onFinished }) => {
                   )}
                 </div>
               </div>
-
-              <button
-                type="button"
-                onClick={fetchDefaultData}
-                disabled={fetching || !formData.diameter}
-                className="w-full bg-slate-800 text-white py-3 text-[10px] font-black uppercase hover:bg-blue-600 transition-all flex items-center justify-center gap-2 rounded-lg"
-              >
-                {fetching ? (
-                  <Loader2 className="animate-spin" size={14} />
-                ) : (
-                  <Database size={14} />
-                )}
-                Sync Details
-              </button>
-
-              {(isElbow || isTee) && (
-                <div className="grid grid-cols-2 gap-3 pt-2">
-                  <div>
-                    <label className={labelStyle}>Angle</label>
-                    <select
-                      className={inputStyle}
-                      value={formData.angle}
-                      onChange={(e) =>
-                        setFormData({ ...formData, angle: e.target.value })
-                      }
-                    >
-                      <option value="">-- Angle --</option>
-                      <option value="90">90°</option>
-                      <option value="45">45°</option>
-                      <option value="30">30°</option>
-                      <option value="22.5">22.5°</option>
-                      <option value="11.25">11.25°</option>
-                    </select>
-                  </div>
-                  {isElbow && (
-                    <div>
-                      <label className={labelStyle}>Radius</label>
-                      <select
-                        className={inputStyle}
-                        value={formData.radius}
-                        onChange={(e) =>
-                          setFormData({ ...formData, radius: e.target.value })
-                        }
-                      >
-                        <option value="">-- R --</option>
-                        <option value="1.5D">1.5D</option>
-                        <option value="3D">3D</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {isFlange && (
-                <div className="pt-2">
-                  <label className={labelStyle + " text-blue-600"}>
-                    Bore Dimensions (Ref)
-                  </label>
-                  <div className="p-2 bg-blue-50 border border-blue-100 text-[11px] font-mono text-blue-800 rounded-sm min-h-[36px] flex items-center">
-                    {formData.drilling || "No Bore Data Loaded"}
-                  </div>
-                </div>
-              )}
             </div>
 
-            {/* KOLOM 3: ADMINISTRATION */}
-            <div className="bg-white border border-slate-200 p-6 space-y-4 shadow-sm rounded-xl">
-              <div className="text-[10px] font-black text-blue-600 uppercase border-b pb-2 mb-4 tracking-widest flex items-center gap-2">
-                <FileText size={14} /> Final Registration
-              </div>
+            <div className="h-px bg-slate-100 my-4"></div>
 
+            {/* Sectie 3: Meta Data */}
+            <div className="grid grid-cols-2 gap-6">
               <div>
-                <label className={labelStyle}>Drawing Reference</label>
+                <label className={labelStyle}>
+                  <FileText size={14} className="inline mr-2 mb-0.5" />
+                  Tekening Nr.
+                </label>
                 <input
+                  type="text"
                   className={inputStyle}
+                  placeholder="bv. 3844-001"
                   value={formData.drawingNr}
                   onChange={(e) =>
                     setFormData({ ...formData, drawingNr: e.target.value })
                   }
-                  placeholder="Optional"
                 />
               </div>
 
@@ -539,53 +408,57 @@ const AdminNewProductView = ({ onFinished }) => {
                 </select>
               </div>
 
-              <div>
-                <label className={labelStyle + " text-orange-600"}>
-                  Final Product Code
+              <div className="col-span-2">
+                <label className={`${labelStyle} text-blue-600`}>
+                  <Search size={14} className="inline mr-2 mb-0.5" />
+                  Gegenereerde Product Code
                 </label>
                 <div className="relative">
                   <input
                     readOnly
-                    className="w-full bg-orange-50 border border-orange-200 rounded-lg px-3 py-3 text-sm font-black text-orange-800 outline-none"
-                    placeholder="ID..."
+                    className="w-full bg-blue-50/50 border-2 border-blue-100 rounded-xl px-4 py-4 text-sm font-black text-blue-800 outline-none"
+                    placeholder="Wordt automatisch gegenereerd..."
                     value={formData.productCode}
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className={labelStyle}>Stock</label>
-                  <input
-                    type="number"
-                    className={inputStyle}
-                    value={formData.stock}
-                    onChange={(e) =>
-                      setFormData({ ...formData, stock: e.target.value })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className={labelStyle}>Price</label>
-                  <input
-                    type="number"
-                    className={inputStyle}
-                    value={formData.price}
-                    onChange={(e) =>
-                      setFormData({ ...formData, price: e.target.value })
-                    }
-                  />
-                </div>
+              <div>
+                <label className={labelStyle}>Voorraad</label>
+                <input
+                  type="number"
+                  className={inputStyle}
+                  value={formData.stock}
+                  onChange={(e) =>
+                    setFormData({ ...formData, stock: e.target.value })
+                  }
+                />
               </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full mt-6 bg-blue-700 hover:bg-blue-800 text-white py-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-100 disabled:opacity-50"
-              >
-                <Save size={18} /> Save to Main Database
-              </button>
+              <div>
+                <label className={labelStyle}>Prijs (€)</label>
+                <input
+                  type="number"
+                  className={inputStyle}
+                  value={formData.price}
+                  onChange={(e) =>
+                    setFormData({ ...formData, price: e.target.value })
+                  }
+                />
+              </div>
             </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-xl shadow-blue-200 disabled:opacity-50"
+            >
+              {loading ? (
+                <Loader2 className="animate-spin" size={18} />
+              ) : (
+                <Save size={18} />
+              )}
+              {loading ? "Opslaan..." : "Opslaan in Database"}
+            </button>
           </form>
         </div>
       </div>

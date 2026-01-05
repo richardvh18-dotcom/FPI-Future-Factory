@@ -7,7 +7,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 
-// Originele configuratie
+// Configuratie voor project: fittings-a5cc6
 const firebaseConfig = {
   apiKey: "AIzaSyBcH_2W25I-pcxSubuJNBkw7Tw7F_4_LXc",
   authDomain: "fittings-a5cc6.firebaseapp.com",
@@ -17,39 +17,36 @@ const firebaseConfig = {
   appId: "1:682365512086:web:75481bcb79ac6dea9455b7",
 };
 
-// Initialiseer Firebase
+// Initialiseer Firebase met foutafhandeling
 let app;
 try {
   app = initializeApp(firebaseConfig);
-  console.log(
-    "Firebase succesvol geïnitialiseerd met Project ID:",
-    firebaseConfig.projectId
-  );
+  console.log("✅ Firebase verbonden met:", firebaseConfig.projectId);
 } catch (error) {
-  console.error("Firebase initialisatie fout:", error);
+  console.error("❌ Firebase initialisatie fout:", error);
 }
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const appId = "fittings-app-v1"; // Interne ID voor data-structuur
 
-// Centrale logging functie
+/**
+ * Logt een activiteit naar de 'logs' collectie in Firestore.
+ * Wordt gebruikt voor audit trails (wie heeft wat gedaan).
+ */
 export const logActivity = async (user, action, details) => {
-  if (!user) return;
+  if (!user || !db) return;
+  
   try {
-    await addDoc(collection(db, "artifacts", appId, "activity_logs"), {
-      userId: user.uid,
-      userEmail: user.email,
+    await addDoc(collection(db, "artifacts", appId, "public", "data", "logs"), {
+      timestamp: serverTimestamp(),
+      user: user.email || "Unknown",
+      userId: user.uid || "Unknown",
       action: action,
       details: details,
-      timestamp: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn(
-      "Kon activiteit niet loggen (mogelijk rechten probleem):",
-      error
-    );
+    console.log(`[LOG] ${user.email} - ${action}`);
+  } catch (e) {
+    console.error("Error adding log: ", e);
   }
 };
-
-export const getProvisioningAuth = () => getAuth(app);

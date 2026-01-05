@@ -1,469 +1,480 @@
-import React, { useState, useEffect, useMemo } from "react";
-import {
-  collection,
-  onSnapshot,
-  doc,
-  updateDoc,
-  deleteDoc,
-  setDoc,
-} from "firebase/firestore";
-import { db, appId, logActivity, auth } from "../../config/firebase";
+import React, { useState, useEffect } from "react";
 import {
   Users,
-  UserCheck,
-  Clock,
+  UserPlus,
   Search,
   Edit2,
   Trash2,
+  Save,
   X,
-  AlertCircle,
+  ChevronDown,
+  ChevronRight,
   Shield,
-  UserPlus,
-  Plus,
+  Globe,
   Mail,
-  ShieldCheck,
-  ShieldAlert,
-  Briefcase,
-  Loader2,
+  User,
 } from "lucide-react";
+import {
+  collection,
+  getDocs,
+  doc,
+  setDoc,
+  deleteDoc,
+} from "firebase/firestore";
+import { db, appId } from "../../config/firebase";
 
-/**
- * AdminUsersView: Centraal Gebruikersbeheer voor FPI GRE Database.
- * Volledig gecentreerde lay-out met groepering op rol en aanvraag-wachtrij.
- */
-const AdminUsersView = () => {
+const AdminUsersView = ({ onBack }) => {
   const [users, setUsers] = useState([]);
-  const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
-  const [isAdding, setIsAdding] = useState(false);
-  const [activeView, setActiveView] = useState("active"); // "active" of "pending"
+  const [searchTerm, setSearchTerm] = useState("");
 
-  const [newUser, setNewUser] = useState({
-    email: "",
-    name: "",
-    role: "user",
-    status: "active",
+  // State voor bewerken/aanmaken
+  const [editingUser, setEditingUser] = useState(null);
+  const [isCreating, setIsCreating] = useState(false);
+
+  // State voor inklappen
+  const [expandedRoles, setExpandedRoles] = useState({
+    admin: true,
+    editor: true,
+    viewer: true,
   });
 
+  // Formulier data
+  const [formData, setFormData] = useState({
+    email: "",
+    name: "",
+    role: "viewer",
+    country: "Nederland",
+  });
+
+  // --- DATA LADEN ---
   useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "artifacts", appId, "user_roles"),
-      (snap) => {
-        setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        setLoading(false);
-      }
-    );
-    return () => unsub();
+    fetchUsers();
   }, []);
 
-  const pendingUsers = useMemo(
-    () => users.filter((u) => u.status === "pending"),
-    [users]
-  );
-  const activeUsers = useMemo(
-    () => users.filter((u) => u.status !== "pending"),
-    [users]
-  );
-
-  const groupedUsers = useMemo(() => {
-    const filtered = activeUsers.filter(
-      (u) =>
-        u.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (u.name || "").toLowerCase().includes(searchTerm.toLowerCase())
-    );
-
-    const groups = {
-      admin: {
-        label: "Beheerders",
-        icon: <ShieldCheck className="text-orange-500" />,
-        items: [],
-      },
-      editor: {
-        label: "Redacteuren",
-        icon: <Edit2 className="text-blue-500" />,
-        items: [],
-      },
-      inspector: {
-        label: "Inspecteurs",
-        icon: <Briefcase className="text-emerald-500" />,
-        items: [],
-      },
-      user: {
-        label: "Gebruikers",
-        icon: <Users className="text-slate-400" />,
-        items: [],
-      },
-    };
-
-    filtered.forEach((u) => {
-      const role = u.role || "user";
-      if (groups[role]) groups[role].items.push(u);
-      else groups.user.items.push(u);
-    });
-
-    return groups;
-  }, [activeUsers, searchTerm]);
-
-  const approve = async (id) => {
-    await updateDoc(doc(db, "artifacts", appId, "user_roles", id), {
-      status: "active",
-      role: "user",
-    });
-    logActivity(
-      auth.currentUser,
-      "USER_APPROVE",
-      `Gebruiker ${id} goedgekeurd.`
-    );
-  };
-
-  const handleAddUser = async (e) => {
-    e.preventDefault();
-    if (!newUser.email) return;
+  const fetchUsers = async () => {
+    setLoading(true);
     try {
-      const emailId = newUser.email.toLowerCase().trim();
-      await setDoc(doc(db, "artifacts", appId, "user_roles", emailId), {
-        ...newUser,
-        id: emailId,
-        createdAt: new Date(),
-      });
-      setIsAdding(false);
-      setNewUser({ email: "", name: "", role: "user", status: "active" });
-      logActivity(
-        auth.currentUser,
-        "USER_MANUAL_ADD",
-        `Gebruiker ${emailId} handmatig aangemaakt.`
+      const querySnapshot = await getDocs(
+        collection(db, "artifacts", appId, "user_roles")
       );
-    } catch (err) {
-      console.error(err);
+      const userList = querySnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setUsers(userList);
+    } catch (error) {
+      console.error("Fout bij ophalen gebruikers:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (loading)
+  // --- FILTEREN & GROEPEREN ---
+  const filteredUsers = users.filter(
+    (u) =>
+      (u.name?.toLowerCase() || "").includes(searchTerm.toLowerCase()) ||
+      (u.email?.toLowerCase() || "").includes(searchTerm.toLowerCase()) ||
+      (u.country?.toLowerCase() || "").includes(searchTerm.toLowerCase())
+  );
+
+  const groupedUsers = filteredUsers.reduce((acc, user) => {
+    const role = user.role || "viewer";
+    if (!acc[role]) acc[role] = [];
+    acc[role].push(user);
+    return acc;
+  }, {});
+
+  const toggleRoleGroup = (role) => {
+    setExpandedRoles((prev) => ({ ...prev, [role]: !prev[role] }));
+  };
+
+  // --- HANDLERS ---
+  const handleEdit = (user) => {
+    setEditingUser(user);
+    setFormData({
+      email: user.email || user.id,
+      name: user.name || "",
+      role: user.role || "viewer",
+      country: user.country || "",
+    });
+    setIsCreating(false);
+  };
+
+  const handleCreate = () => {
+    setEditingUser(null);
+    setFormData({
+      email: "",
+      name: "",
+      role: "viewer",
+      country: "Nederland",
+    });
+    setIsCreating(true);
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!formData.email) return alert("Email is verplicht!");
+
+    try {
+      const docId = formData.email.toLowerCase();
+      await setDoc(
+        doc(db, "artifacts", appId, "user_roles", docId),
+        {
+          email: docId,
+          name: formData.name,
+          role: formData.role,
+          country: formData.country,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+
+      alert("✅ Gebruiker opgeslagen!");
+      setEditingUser(null);
+      setIsCreating(false);
+      fetchUsers();
+    } catch (error) {
+      console.error("Opslaan mislukt:", error);
+      alert("Fout bij opslaan.");
+    }
+  };
+
+  const handleDelete = async (email) => {
+    if (
+      window.confirm(
+        `Weet je zeker dat je ${email} wilt verwijderen? De gebruiker verliest dan toegang.`
+      )
+    ) {
+      try {
+        await deleteDoc(
+          doc(db, "artifacts", appId, "user_roles", email.toLowerCase())
+        );
+        fetchUsers();
+      } catch (error) {
+        console.error("Verwijderen mislukt:", error);
+      }
+    }
+  };
+
+  // --- RENDER FORMULIER (Gecentreerd) ---
+  if (isCreating || editingUser) {
     return (
-      <div className="flex-1 flex items-center justify-center p-20 bg-slate-50">
-        <Loader2 className="animate-spin text-blue-600 mr-2" />
-        <span className="font-bold text-slate-400 italic uppercase text-[10px] tracking-widest">
-          Database Sync...
-        </span>
-      </div>
-    );
-
-  return (
-    <div className="flex-1 overflow-y-auto bg-slate-50 custom-scrollbar animate-in fade-in duration-500">
-      {/* Centrerende Wrapper */}
-      <div className="w-full flex flex-col items-center min-h-full py-10 px-4">
-        {/* Content Container (Gecentreerd) */}
-        <div className="w-full max-w-4xl space-y-10">
-          {/* Header Sectie */}
-          <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col items-center text-center gap-6">
-            <div className="space-y-3">
-              <h2 className="text-4xl font-black text-slate-900 uppercase italic tracking-tighter leading-none">
-                Gebruikersbeheer
-              </h2>
-              <div className="flex items-center justify-center gap-4">
-                <div
-                  className={`flex items-center gap-2 px-4 py-1.5 rounded-full transition-all cursor-pointer ${
-                    activeView === "active"
-                      ? "bg-blue-600 text-white shadow-lg"
-                      : "bg-slate-100 text-slate-400"
-                  }`}
-                  onClick={() => setActiveView("active")}
-                >
-                  <Users size={14} />
-                  <span className="text-[10px] font-black uppercase tracking-widest">
-                    {activeUsers.length} Actief
-                  </span>
-                </div>
-                <div
-                  className={`flex items-center gap-2 px-4 py-1.5 rounded-full transition-all cursor-pointer ${
-                    activeView === "pending"
-                      ? "bg-orange-500 text-white shadow-lg animate-pulse"
-                      : "bg-slate-100 text-slate-400"
-                  }`}
-                  onClick={() => setActiveView("pending")}
-                >
-                  <Clock size={14} />
-                  <span className="text-[10px] font-black uppercase tracking-widest">
-                    {pendingUsers.length} Wachtende Aanvragen
-                  </span>
-                </div>
-              </div>
-            </div>
-
+      <div className="h-full w-full bg-slate-50 overflow-y-auto custom-scrollbar p-8 flex justify-center">
+        <div className="max-w-2xl w-full bg-white p-8 rounded-2xl shadow-xl border border-slate-200 h-fit animate-in fade-in zoom-in-95">
+          <div className="flex justify-between items-center mb-8 border-b border-slate-100 pb-6">
+            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
+              {isCreating ? (
+                <UserPlus className="text-blue-600" />
+              ) : (
+                <Edit2 className="text-blue-600" />
+              )}
+              {isCreating ? "Nieuwe Gebruiker" : "Gebruiker Bewerken"}
+            </h2>
             <button
-              onClick={() => setIsAdding(true)}
-              className="bg-slate-900 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase shadow-2xl hover:bg-blue-600 transition-all active:scale-95 flex items-center gap-3"
+              onClick={() => {
+                setIsCreating(false);
+                setEditingUser(null);
+              }}
+              className="text-slate-400 hover:text-slate-600 font-bold"
             >
-              <UserPlus size={18} /> Nieuwe Gebruiker Registreren
+              Annuleren
             </button>
           </div>
 
-          {/* Zoekbalk */}
-          <div className="flex justify-center">
-            <div className="relative w-full max-w-md group">
-              <Search
-                className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-blue-500 transition-colors"
-                size={20}
-              />
-              <input
-                className="w-full pl-14 pr-6 py-4 bg-white border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-blue-500/5 shadow-sm transition-all"
-                placeholder="Zoek op naam of e-mail..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {/* Dynamische Weergave */}
-          {activeView === "pending" ? (
-            <div className="space-y-6 animate-in slide-in-from-bottom-4">
-              <div className="flex items-center justify-center gap-3 text-orange-600 mb-4">
-                <AlertCircle size={22} />
-                <h3 className="text-sm font-black uppercase tracking-[0.2em] italic">
-                  Openstaande Autorisatie Aanvragen
-                </h3>
-              </div>
-
-              {pendingUsers.length > 0 ? (
-                <div className="grid grid-cols-1 gap-4">
-                  {pendingUsers.map((u) => (
-                    <div
-                      key={u.id}
-                      className="bg-white p-8 rounded-[2rem] border-2 border-orange-100 flex justify-between items-center shadow-xl"
-                    >
-                      <div className="text-left space-y-1">
-                        <p className="font-black text-slate-800 text-lg uppercase italic leading-tight">
-                          {u.name || "Gast Gebruiker"}
-                        </p>
-                        <p className="text-xs text-slate-400 font-mono tracking-tight">
-                          {u.id}
-                        </p>
-                      </div>
-                      <div className="flex gap-3">
-                        <button
-                          onClick={() => approve(u.id)}
-                          className="bg-emerald-600 text-white p-4 rounded-2xl hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition-all active:scale-90"
-                          title="Accepteren"
-                        >
-                          <UserCheck size={24} />
-                        </button>
-                        <button
-                          onClick={() =>
-                            deleteDoc(
-                              doc(db, "artifacts", appId, "user_roles", u.id)
-                            )
-                          }
-                          className="bg-slate-50 text-slate-300 p-4 rounded-2xl hover:bg-red-50 hover:text-red-600 transition-all active:scale-90"
-                        >
-                          <X size={24} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="bg-white p-20 rounded-[3rem] border border-dashed border-slate-200 text-center">
-                  <Clock size={56} className="mx-auto text-slate-100 mb-6" />
-                  <p className="text-slate-300 font-black uppercase tracking-[0.3em] text-[10px]">
-                    Geen nieuwe aanvragen gevonden
-                  </p>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-16 animate-in">
-              {Object.entries(groupedUsers).map(
-                ([role, group]) =>
-                  group.items.length > 0 && (
-                    <div key={role} className="space-y-6">
-                      <div className="flex items-center justify-center gap-4">
-                        <span className="h-px bg-slate-200 flex-1"></span>
-                        <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] flex items-center gap-3">
-                          {group.icon}
-                          {group.label} ({group.items.length})
-                        </h3>
-                        <span className="h-px bg-slate-200 flex-1"></span>
-                      </div>
-
-                      <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden">
-                        <table className="w-full text-left text-sm border-collapse">
-                          <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
-                            <tr>
-                              <th className="px-10 py-5">Medewerker Details</th>
-                              <th className="px-10 py-5 text-center">Status</th>
-                              <th className="px-10 py-5 text-right">Beheer</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {group.items.map((u) => (
-                              <tr
-                                key={u.id}
-                                className="hover:bg-slate-50/50 transition-colors group"
-                              >
-                                <td className="px-10 py-6">
-                                  <div className="flex flex-col text-left">
-                                    <span className="font-black text-slate-800 uppercase italic text-sm tracking-tight leading-none mb-1">
-                                      {u.name || "Naam onbekend"}
-                                    </span>
-                                    <span className="text-[11px] text-slate-400 font-mono tracking-tighter">
-                                      {u.id}
-                                    </span>
-                                  </div>
-                                </td>
-                                <td className="px-10 py-6">
-                                  <div className="flex items-center justify-center gap-2">
-                                    <div className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-                                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                      Gevalideerd
-                                    </span>
-                                  </div>
-                                </td>
-                                <td className="px-10 py-6 text-right">
-                                  <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                                    <button className="p-3 bg-slate-50 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all">
-                                      <Edit2 size={16} />
-                                    </button>
-                                    <button
-                                      onClick={() =>
-                                        deleteDoc(
-                                          doc(
-                                            db,
-                                            "artifacts",
-                                            appId,
-                                            "user_roles",
-                                            u.id
-                                          )
-                                        )
-                                      }
-                                      className="p-3 bg-slate-50 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
-                                    >
-                                      <Trash2 size={16} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* MODAL: HANDMATIG TOEVOEGEN */}
-      {isAdding && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xl z-[120] flex items-center justify-center p-4">
-          <form
-            onSubmit={handleAddUser}
-            className="bg-white rounded-[3rem] p-10 max-w-md w-full shadow-2xl space-y-8 border border-white/20 animate-in zoom-in-95 duration-200"
-          >
-            <div className="flex justify-between items-start">
-              <div className="flex items-center gap-5">
-                <div className="p-4 bg-blue-600 text-white rounded-[1.5rem] shadow-xl shadow-blue-200">
-                  <UserPlus size={26} />
-                </div>
-                <div className="text-left">
-                  <h3 className="text-2xl font-black text-slate-900 uppercase italic tracking-tighter leading-none">
-                    Registreren
-                  </h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em] mt-2">
-                    Nieuw Account Aanmaken
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAdding(false)}
-                className="p-2 hover:bg-slate-100 rounded-full text-slate-300 transition-all active:scale-90"
-              >
-                <X size={32} />
-              </button>
-            </div>
-
-            <div className="space-y-5">
-              <div className="space-y-2 text-left">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">
-                  Volledige Naam
-                </label>
-                <div className="relative">
-                  <Users
-                    className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"
-                    size={18}
-                  />
-                  <input
-                    className="w-full pl-14 pr-4 py-5 bg-slate-50 border border-slate-100 rounded-[1.5rem] text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-500/5 transition-all outline-none"
-                    placeholder="Bijv: Jan de Groot"
-                    value={newUser.name}
-                    onChange={(e) =>
-                      setNewUser({ ...newUser, name: e.target.value })
-                    }
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2 text-left">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">
-                  E-mail Adres
+          <form onSubmit={handleSave} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Email */}
+              <div className="col-span-2">
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                  Email Adres
                 </label>
                 <div className="relative">
                   <Mail
-                    className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                     size={18}
                   />
                   <input
-                    className="w-full pl-14 pr-4 py-5 bg-slate-50 border border-slate-100 rounded-[1.5rem] text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-500/5 transition-all outline-none"
                     type="email"
-                    placeholder="naam@fpi.com"
-                    value={newUser.email}
+                    className={`w-full pl-10 pr-4 py-3 border-2 border-slate-200 rounded-xl text-sm font-bold outline-none transition-all ${
+                      editingUser
+                        ? "bg-slate-100 text-slate-500 cursor-not-allowed"
+                        : "bg-slate-50 focus:border-blue-500 text-slate-700"
+                    }`}
+                    value={formData.email}
                     onChange={(e) =>
-                      setNewUser({ ...newUser, email: e.target.value })
+                      setFormData({ ...formData, email: e.target.value })
                     }
+                    placeholder="gebruiker@bedrijf.com"
+                    readOnly={!!editingUser}
                     required
+                  />
+                </div>
+                {editingUser && (
+                  <p className="text-[10px] text-slate-400 mt-1 ml-1">
+                    Email is de unieke ID en kan niet gewijzigd worden.
+                  </p>
+                )}
+              </div>
+
+              {/* Naam */}
+              <div>
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                  Naam
+                </label>
+                <div className="relative">
+                  <User
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                    size={18}
+                  />
+                  <input
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:border-blue-500 outline-none transition-all"
+                    value={formData.name}
+                    onChange={(e) =>
+                      setFormData({ ...formData, name: e.target.value })
+                    }
+                    placeholder="Volledige naam"
                   />
                 </div>
               </div>
 
-              <div className="space-y-2 text-left">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">
-                  Toegangsrol
+              {/* Land */}
+              <div>
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                  Land
                 </label>
                 <div className="relative">
-                  <Shield
-                    className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"
+                  <Globe
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                     size={18}
                   />
-                  <select
-                    className="w-full pl-14 pr-4 py-5 bg-slate-50 border border-slate-100 rounded-[1.5rem] text-sm font-black uppercase tracking-widest transition-all outline-none appearance-none cursor-pointer"
-                    value={newUser.role}
+                  <input
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:border-blue-500 outline-none transition-all"
+                    value={formData.country}
                     onChange={(e) =>
-                      setNewUser({ ...newUser, role: e.target.value })
+                      setFormData({ ...formData, country: e.target.value })
                     }
-                  >
-                    <option value="user">USER (Alleen Kijkrechten)</option>
-                    <option value="inspector">
-                      INSPECTOR (QC Meetlijsten)
-                    </option>
-                    <option value="editor">EDITOR (Data Wijzigen)</option>
-                    <option value="admin">ADMIN (Volledige Toegang)</option>
-                  </select>
+                    placeholder="Bijv. Nederland"
+                  />
+                </div>
+              </div>
+
+              {/* Rol */}
+              <div className="col-span-2">
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                  Toegangsrol
+                </label>
+                <div className="grid grid-cols-3 gap-4">
+                  {["admin", "editor", "viewer"].map((role) => (
+                    <div
+                      key={role}
+                      onClick={() => setFormData({ ...formData, role })}
+                      className={`cursor-pointer border-2 rounded-xl p-4 flex flex-col items-center gap-2 transition-all ${
+                        formData.role === role
+                          ? "border-blue-500 bg-blue-50 text-blue-700 shadow-md transform scale-[1.02]"
+                          : "border-slate-100 hover:border-blue-200 text-slate-500 bg-slate-50"
+                      }`}
+                    >
+                      <Shield
+                        size={20}
+                        className={
+                          formData.role === role ? "fill-blue-200" : ""
+                        }
+                      />
+                      <span className="text-xs font-black uppercase">
+                        {role}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
 
-            <button
-              type="submit"
-              className="w-full py-6 bg-slate-900 text-white font-black uppercase text-xs rounded-[2rem] shadow-2xl hover:bg-blue-600 transition-all flex items-center justify-center gap-3 active:scale-95"
-            >
-              <Plus size={22} /> Gebruiker Activeren
-            </button>
+            <div className="pt-6 border-t border-slate-100 flex justify-end">
+              <button
+                type="submit"
+                className="bg-emerald-600 text-white px-8 py-3 rounded-xl font-black text-sm uppercase tracking-widest flex items-center gap-2 hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-all transform hover:-translate-y-0.5"
+              >
+                <Save size={18} /> Opslaan
+              </button>
+            </div>
           </form>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  // --- RENDER LIJST (Gecentreerd) ---
+  return (
+    // AANPASSING: w-full toegevoegd aan container voor correcte centrering
+    <div className="h-full w-full bg-slate-50 overflow-y-auto custom-scrollbar p-8 flex flex-col items-center">
+      <div className="w-full max-w-5xl space-y-6">
+        {/* Header Sectie */}
+        <div className="flex justify-between items-center bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+          <div>
+            <h2 className="text-3xl font-black text-slate-800 flex items-center gap-3">
+              <Users className="text-purple-500" size={32} />
+              Gebruikersbeheer
+            </h2>
+            <p className="text-sm text-slate-400 font-medium ml-11 mt-1">
+              Beheer toegang en rollen
+            </p>
+          </div>
+
+          <div className="flex gap-2">
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-50 rounded-lg transition-colors border border-transparent hover:border-slate-200"
+              >
+                Terug
+              </button>
+            )}
+            {/* AANPASSING: Knop kleiner en strakker */}
+            <button
+              onClick={handleCreate}
+              className="bg-purple-600 text-white px-4 py-2 rounded-lg font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all transform hover:-translate-y-0.5"
+            >
+              <UserPlus size={16} /> Nieuwe Gebruiker
+            </button>
+          </div>
+        </div>
+
+        {/* Zoekbalk */}
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4 sticky top-0 z-20">
+          <Search className="text-slate-400 ml-2" size={20} />
+          <input
+            className="flex-1 bg-transparent text-lg font-bold text-slate-700 placeholder:text-slate-300 outline-none"
+            placeholder="Zoek op naam, email of land..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm("")}
+              className="text-slate-400 hover:text-slate-600 mr-2"
+            >
+              <span className="text-xs font-bold uppercase bg-slate-100 px-2 py-1 rounded-md">
+                Reset
+              </span>
+            </button>
+          )}
+        </div>
+
+        {/* Lijst */}
+        <div className="space-y-4">
+          {Object.keys(groupedUsers).length === 0 ? (
+            <div className="text-center py-20 text-slate-400 bg-white rounded-3xl border-2 border-dashed border-slate-200">
+              <Users size={48} className="mx-auto mb-4 opacity-20" />
+              <p className="font-bold text-lg">Geen gebruikers gevonden</p>
+              <p className="text-sm">
+                Pas je zoekopdracht aan of voeg een nieuwe gebruiker toe.
+              </p>
+            </div>
+          ) : (
+            Object.entries(groupedUsers).map(([role, items]) => (
+              <div
+                key={role}
+                className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden"
+              >
+                {/* Groep Header (Compacter) */}
+                <div
+                  className="bg-slate-50/80 py-2 px-3 flex justify-between items-center cursor-pointer hover:bg-slate-100 transition-colors select-none border-b border-slate-100"
+                  onClick={() => toggleRoleGroup(role)}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-1 bg-white rounded-lg shadow-sm text-slate-400">
+                      {expandedRoles[role] ? (
+                        <ChevronDown size={16} />
+                      ) : (
+                        <ChevronRight size={16} />
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Shield
+                        size={16}
+                        className={
+                          role === "admin"
+                            ? "text-emerald-500"
+                            : "text-blue-500"
+                        }
+                      />
+                      <h3 className="text-xs font-black text-slate-700 uppercase tracking-wide">
+                        {role}
+                      </h3>
+                      <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-black">
+                        {items.length}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tabel */}
+                {expandedRoles[role] && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-white text-slate-400 font-bold uppercase text-[10px] tracking-wider border-b border-slate-100">
+                        <tr>
+                          <th className="p-4 pl-8 w-1/3">Gebruiker</th>
+                          <th className="p-4">Contact</th>
+                          <th className="p-4">Land</th>
+                          <th className="p-4 text-right pr-8">Acties</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {items.map((user) => (
+                          <tr
+                            key={user.id}
+                            className="hover:bg-slate-50 transition-colors group"
+                          >
+                            <td className="p-4 pl-8">
+                              <span className="font-bold text-slate-700 block text-base">
+                                {user.name || "Naamloos"}
+                              </span>
+                              <span className="text-xs text-slate-400 font-mono uppercase bg-slate-100 px-1.5 py-0.5 rounded">
+                                {user.role}
+                              </span>
+                            </td>
+                            <td className="p-4 text-slate-600 font-medium">
+                              {user.email}
+                            </td>
+                            <td className="p-4">
+                              {user.country && (
+                                <span className="flex items-center gap-2 text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg w-fit border border-slate-200">
+                                  <Globe size={12} className="text-slate-400" />{" "}
+                                  {user.country}
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-4 text-right pr-8">
+                              <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={() => handleEdit(user)}
+                                  className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100"
+                                  title="Bewerken"
+                                >
+                                  <Edit2 size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleDelete(user.id)}
+                                  className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100"
+                                  title="Toegang intrekken"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   );
 };
