@@ -15,16 +15,15 @@ import {
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db, appId } from "../../../config/firebase";
 
+// Standaard imports voor stabiliteit (geen lazy loading om build errors te vermijden)
 import MatrixView from "./MatrixView";
 import LibraryView from "./LibraryView";
 import BlueprintsView from "./BlueprintsView";
 import DimensionsView from "./DimensionsView";
 import SpecsView from "./SpecsView";
 
-const DEFAULT_IDS = [
-  25, 32, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600,
-];
-const DEFAULT_PNS = [6, 10, 16, 25];
+// VERWIJDERD: DEFAULT_IDS en DEFAULT_PNS constanten.
+// De applicatie is nu volledig afhankelijk van de data uit Firestore.
 
 const AdminMatrixManager = ({
   productRange,
@@ -34,26 +33,33 @@ const AdminMatrixManager = ({
   boreDimensions,
   onBack,
 }) => {
-  // AANPASSING: Start op 'dashboard' in plaats van 'matrix'
   const [activeTab, setActiveTab] = useState("dashboard");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ type: "", msg: "" });
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   // Data States
-  const [matrixData, setMatrixData] = useState({});
+  // Initialiseer direct met props als die er zijn, anders leeg object.
+  // Geen fallback naar hardcoded data.
+  const [matrixData, setMatrixData] = useState(productRange || {});
+  const [blueprints, setBlueprints] = useState(productTemplates || {});
+
+  // Library data state initialisatie
+  // Alleen data uit generalConfig wordt gebruikt.
   const [libraryData, setLibraryData] = useState({
-    connections: [],
-    labels: [],
-    codes: [],
-    product_names: [],
-    pns: [],
-    diameters: [],
+    connections: generalConfig?.connections || [],
+    labels: generalConfig?.labels || [],
+    extraCodes: generalConfig?.extraCodes || generalConfig?.codes || [],
+    product_names: generalConfig?.product_names || [],
+    pns: generalConfig?.pns ? [...generalConfig.pns].sort((a, b) => a - b) : [],
+    diameters: generalConfig?.diameters
+      ? [...generalConfig.diameters].sort((a, b) => a - b)
+      : [],
   });
-  const [blueprints, setBlueprints] = useState({});
+
   const [dimType, setDimType] = useState("cb");
 
-  // --- MENU ITEMS VOOR DASHBOARD ---
+  // Menu items configuratie
   const menuItems = [
     {
       id: "matrix",
@@ -92,23 +98,41 @@ const AdminMatrixManager = ({
     },
   ];
 
-  // Sync props to state
+  // --- SYNC PROPS TO STATE (GESPLITST) ---
+
+  // 1. Sync Matrix Data
   useEffect(() => {
-    if (productRange) setMatrixData(productRange);
-    if (generalConfig) {
-      setLibraryData({
+    if (productRange && Object.keys(productRange).length > 0) {
+      setMatrixData(productRange);
+    }
+  }, [productRange]);
+
+  // 2. Sync Library Data
+  // Alleen updaten als er daadwerkelijk nieuwe config is
+  useEffect(() => {
+    if (generalConfig && Object.keys(generalConfig).length > 0) {
+      setLibraryData((prev) => ({
+        ...prev,
         connections: generalConfig.connections || [],
         labels: generalConfig.labels || [],
-        codes: generalConfig.codes || [],
+        extraCodes: generalConfig.extraCodes || generalConfig.codes || [],
         product_names: generalConfig.product_names || [],
-        pns: generalConfig.pns ? generalConfig.pns.sort((a, b) => a - b) : [],
-        diameters: generalConfig.diameters
-          ? generalConfig.diameters.sort((a, b) => a - b)
+        pns: generalConfig.pns
+          ? [...generalConfig.pns].sort((a, b) => a - b)
           : [],
-      });
+        diameters: generalConfig.diameters
+          ? [...generalConfig.diameters].sort((a, b) => a - b)
+          : [],
+      }));
     }
-    if (productTemplates) setBlueprints(productTemplates);
-  }, [productRange, generalConfig, productTemplates]);
+  }, [generalConfig]);
+
+  // 3. Sync Blueprints
+  useEffect(() => {
+    if (productTemplates && Object.keys(productTemplates).length > 0) {
+      setBlueprints(productTemplates);
+    }
+  }, [productTemplates]);
 
   // --- SAVE HANDLERS ---
   const saveMatrix = async () => {
@@ -214,7 +238,6 @@ const AdminMatrixManager = ({
           <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
             <Grid className="text-emerald-500" /> Matrix Manager
           </h2>
-          {/* Opslaan knop verbergen op dashboard en dimensions */}
           {activeTab !== "dashboard" &&
             activeTab !== "dimensions" &&
             dimType !== "bore" &&
@@ -264,10 +287,9 @@ const AdminMatrixManager = ({
         </div>
       </div>
 
-      {/* TABS (Nu met Dashboard knop) */}
+      {/* TABS */}
       <div className="flex justify-center bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-10 w-full">
         <div className="flex gap-4 px-8 py-0">
-          {/* Dashboard Knop - Altijd zichtbaar om terug te gaan */}
           <button
             onClick={() => setActiveTab("dashboard")}
             className={`py-4 px-4 text-xs font-black uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${
@@ -278,41 +300,7 @@ const AdminMatrixManager = ({
           >
             <LayoutDashboard size={16} /> Menu
           </button>
-
-          {/* De andere tabs (Alleen zichtbaar als we niet op dashboard zijn, of altijd? 
-             Laten we ze altijd tonen voor snelle navigatie, maar 'Menu' is de home) */}
-          {[
-            {
-              id: "matrix",
-              label: "Beschikbaarheid",
-              icon: <Grid size={16} />,
-              color: "emerald",
-            },
-            {
-              id: "library",
-              label: "Bibliotheek",
-              icon: <Database size={16} />,
-              color: "blue",
-            },
-            {
-              id: "blueprints",
-              label: "Blauwdrukken",
-              icon: <Layers size={16} />,
-              color: "purple",
-            },
-            {
-              id: "dimensions",
-              label: "Maatvoering",
-              icon: <Ruler size={16} />,
-              color: "cyan",
-            },
-            {
-              id: "specs",
-              label: "Overzicht",
-              icon: <Package size={16} />,
-              color: "orange",
-            },
-          ].map((tab) => (
+          {menuItems.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
@@ -322,15 +310,13 @@ const AdminMatrixManager = ({
                   : "border-transparent text-slate-400 hover:text-slate-600"
               }`}
             >
-              {tab.icon} {tab.label}
+              {tab.icon} {tab.title}
             </button>
           ))}
         </div>
       </div>
 
-      {/* CONTENT AREA */}
       <div className="flex-1 overflow-y-auto bg-slate-50 custom-scrollbar w-full flex justify-center">
-        {/* DASHBOARD WEERGAVE (TEGELS) */}
         {activeTab === "dashboard" ? (
           <div className="p-8 max-w-7xl w-full animate-in fade-in slide-in-from-bottom-4">
             <div className="mb-8 text-center">
@@ -341,7 +327,6 @@ const AdminMatrixManager = ({
                 Selecteer een onderdeel om te configureren.
               </p>
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {menuItems.map((item) => (
                 <button
@@ -365,7 +350,6 @@ const AdminMatrixManager = ({
             </div>
           </div>
         ) : (
-          // SUB-VIEWS
           <div className="w-full max-w-6xl p-8 space-y-8">
             {activeTab === "matrix" && (
               <MatrixView

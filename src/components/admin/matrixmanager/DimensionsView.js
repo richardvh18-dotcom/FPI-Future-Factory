@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Plus,
   Copy,
+  Box,
 } from "lucide-react";
 import {
   collection,
@@ -19,8 +20,12 @@ import {
   setDoc,
   deleteDoc,
 } from "firebase/firestore";
-import { db, appId } from "../../../config/firebase";
+import {
+  db as firebaseDb,
+  appId as firebaseAppId,
+} from "../../../config/firebase";
 
+// Lazy imports voor sub-componenten
 const AdminToleranceView = lazy(() => import("../AdminToleranceView"));
 const BoreDimensionsManager = lazy(() => import("../BoreDimensionsManager"));
 
@@ -34,75 +39,42 @@ const VIEW_MODES = [
 
 const SUB_TYPES_BELL = [
   { id: "cb", label: "CB", collection: "cb_dimensions" },
-  { id: "tb", label: "TB", collection: "tb_dimensions" },
+  { id: "tb", label: "TB", collection: "fitting_specs" },
 ];
 
-const GROUP_CONFIG = {
-  socket: {
-    title: "Mof",
-    color: "bg-emerald-50 text-emerald-700 border-emerald-100",
-  },
-  dimensions: {
-    title: "Afmetingen",
-    color: "bg-blue-50 text-blue-700 border-blue-100",
-  },
-  mounting: {
-    title: "Montage",
-    color: "bg-amber-50 text-amber-700 border-amber-100",
-  },
-  other: {
-    title: "Overige",
-    color: "bg-slate-50 text-slate-700 border-slate-100",
-  },
-};
-
+// Uitgebreide label mapping voor betere leesbaarheid
 const DIMENSION_LABELS = {
-  B1: "B1",
-  B2: "B2",
+  B1: "B1 (Mofdiepte)",
+  B2: "B2 (Insteek)",
   BA: "BA",
   A1: "A1",
-  TWcb: "TWcb",
-  r1: "r1",
-  BD: "BD",
-  W: "W",
-  L: "L",
-  Z: "Z",
+  TWcb: "TW (Wanddikte CB)",
+  TWtb: "TW (Wanddikte TB)",
+  r1: "r1 (Radius)",
+  BD: "BD (Buitendiameter)",
+  W: "W (Wanddikte)",
+  L: "L (Lengte)",
+  Z: "Z (Z-maat)",
   L1: "L1",
   L2: "L2",
-  alpha: "alpha",
-  d: "d",
+  alpha: "Hoek (α)",
+  d: "d (Diameter)",
   k: "k",
   b: "b",
-};
-
-const FIELD_TO_GROUP_MAP = {
-  B1: "socket",
-  B2: "socket",
-  BA: "socket",
-  A1: "socket",
-  TWcb: "socket",
-  r1: "socket",
-  BD: "dimensions",
-  d: "dimensions",
-  W: "dimensions",
-  L: "dimensions",
-  Z: "dimensions",
-  L1: "mounting",
-  L2: "mounting",
-  alpha: "other",
-  k: "other",
-  b: "other",
 };
 
 const DimensionsView = ({
   libraryData,
   blueprints,
-  db,
-  appId,
+  db: propDb,
+  appId: propAppId,
   bellDimensions,
   boreDimensions,
   productRange,
 }) => {
+  const db = propDb || firebaseDb;
+  const appId = propAppId || firebaseAppId;
+
   const [activeMode, setActiveMode] = useState("bell");
   const [bellSubType, setBellSubType] = useState("cb");
 
@@ -125,8 +97,9 @@ const DimensionsView = ({
 
   const getCollectionName = () => {
     if (activeMode === "fitting") return "standard_fitting_specs";
-    if (activeMode === "bell")
-      return bellSubType === "cb" ? "cb_dimensions" : "tb_dimensions";
+    if (activeMode === "bell") {
+      return bellSubType === "cb" ? "cb_dimensions" : "fitting_specs";
+    }
     return null;
   };
 
@@ -134,11 +107,11 @@ const DimensionsView = ({
     if (activeMode === "bell" || activeMode === "fitting") {
       loadData();
     }
-  }, [activeMode, bellSubType]);
+  }, [activeMode, bellSubType, appId]);
 
   const loadData = async () => {
     const colName = getCollectionName();
-    if (!colName) return;
+    if (!colName || !appId) return;
     setLoading(true);
     setDimData([]);
     setEditingDim(null);
@@ -173,94 +146,90 @@ const DimensionsView = ({
     }
   };
 
-  // --- 1. BESCHIKBARE PN's UIT MATRIX HALEN ---
   const getAvailablePNs = () => {
     if (!productRange || Object.keys(productRange).length === 0)
-      return libraryData.pns || [];
+      return libraryData?.pns || [];
 
     const pns = new Set();
-    const connKeys =
-      activeMode === "bell" ? [bellSubType.toUpperCase()] : ["CB", "TB"];
+    const connKey = bellSubType.toUpperCase();
+    const rangeForConn =
+      productRange[connKey] || productRange[`${connKey}/${connKey}`];
 
-    connKeys.forEach((conn) => {
-      const rangeForConn =
-        productRange[conn] || productRange[`${conn}/${conn}`];
-      if (rangeForConn) {
-        Object.keys(rangeForConn).forEach((pn) => pns.add(Number(pn)));
-      }
-    });
+    if (rangeForConn) {
+      Object.keys(rangeForConn).forEach((pn) => {
+        if (!isNaN(Number(pn))) pns.add(Number(pn));
+      });
+    }
 
-    if (pns.size === 0) return libraryData.pns || [];
-
+    if (pns.size === 0) return libraryData?.pns || [];
     return Array.from(pns).sort((a, b) => a - b);
   };
 
-  // --- 2. BESCHIKBARE ID's UIT MATRIX HALEN ---
   const getAvailableIDs = () => {
     if (!dimFilters.pn) return [];
     if (!productRange || Object.keys(productRange).length === 0)
-      return libraryData.diameters || [];
+      return libraryData?.diameters || [];
 
     const pnKey = String(dimFilters.pn);
+    const connKey = bellSubType.toUpperCase();
     const allIds = new Set();
+    const rangeForConn =
+      productRange[connKey] || productRange[`${connKey}/${connKey}`];
+    const rangeForPN = rangeForConn?.[pnKey];
 
-    if (activeMode === "fitting" && dimFilters.type) {
-      const typeKey = dimFilters.type;
-      ["CB", "TB"].forEach((conn) => {
-        const matrixConn =
-          productRange[conn] || productRange[`${conn}/${conn}`];
-        const range = matrixConn?.[pnKey];
-        if (range) {
-          [typeKey, `${typeKey}_Socket`, `${typeKey}_Spiggot`].forEach((tk) => {
-            if (range[tk] && Array.isArray(range[tk])) {
-              range[tk].forEach((id) => allIds.add(Number(id)));
-            }
-          });
-        }
-      });
-    } else {
-      const connKey = bellSubType.toUpperCase();
-      const matrixConn =
-        productRange[connKey] || productRange[`${connKey}/${connKey}`];
-      const range = matrixConn?.[pnKey];
-      if (range) {
-        Object.values(range).forEach((ids) => {
+    if (rangeForPN) {
+      if (activeMode === "fitting" && dimFilters.type) {
+        const typeKey = dimFilters.type;
+        const baseType = typeKey.split("_")[0];
+        const keysToCheck = [
+          typeKey,
+          baseType,
+          `${baseType}_Socket`,
+          `${baseType}_Spiggot`,
+        ];
+
+        keysToCheck.forEach((key) => {
+          if (rangeForPN[key] && Array.isArray(rangeForPN[key])) {
+            rangeForPN[key].forEach((id) => allIds.add(Number(id)));
+          }
+        });
+      } else {
+        Object.values(rangeForPN).forEach((ids) => {
           if (Array.isArray(ids)) ids.forEach((id) => allIds.add(Number(id)));
         });
       }
     }
 
-    if (allIds.size === 0) return [];
-
+    if (allIds.size === 0 && libraryData?.diameters)
+      return libraryData.diameters;
     return Array.from(allIds).sort((a, b) => a - b);
   };
 
-  // --- 3. SLIMME TEMPLATE ZOEKEN (AANGEPAST) ---
   const getActiveBlueprint = (connSuffix, extraCode, productType) => {
-    // 1. Zoek op specifiek Product Type (bv. Elbow)
     if (productType) {
-      // Met extra code? bv. Elbow_TB_CODE
-      if (extraCode) {
-        let key = `${productType}_${connSuffix}_${extraCode}`;
-        if (blueprints[key]) return blueprints[key];
+      const typeVariations = [
+        productType,
+        `${productType}_Socket`,
+        productType.split("_")[0],
+      ];
+
+      for (const type of typeVariations) {
+        if (extraCode) {
+          let key = `${type}_${connSuffix}_${extraCode}`;
+          if (blueprints[key]) return blueprints[key];
+        }
+        let keyDouble = `${type}_${connSuffix}/${connSuffix}`;
+        if (blueprints[keyDouble]) return blueprints[keyDouble];
+        let keySingle = `${type}_${connSuffix}`;
+        if (blueprints[keySingle]) return blueprints[keySingle];
       }
-
-      // Zoek exacte match zoals in database: Elbow_TB/TB
-      let keyDouble = `${productType}_${connSuffix}/${connSuffix}`;
-      if (blueprints[keyDouble]) return blueprints[keyDouble];
-
-      // Zoek standaard match: Elbow_TB
-      let keySingle = `${productType}_${connSuffix}`;
-      if (blueprints[keySingle]) return blueprints[keySingle];
     }
 
-    // 2. Fallback naar Algemeen (voor Bell of als product niet bestaat)
     if (extraCode) {
       let keyWithCode = `Algemeen_${connSuffix}_${extraCode}`;
       if (blueprints[keyWithCode]) return blueprints[keyWithCode];
     }
 
-    // Probeer Algemeen_TB/TB (zoals in jouw database)
     let bpKeyDouble = `Algemeen_${connSuffix}/${connSuffix}`;
     if (blueprints[bpKeyDouble]) return blueprints[bpKeyDouble];
 
@@ -278,8 +247,6 @@ const DimensionsView = ({
 
     let newKey = "";
     const variantUpper = bellSubType.toUpperCase();
-
-    // Bepaal Product Type (alleen voor Fitting)
     let selectedType = null;
 
     if (activeMode === "fitting") {
@@ -299,9 +266,6 @@ const DimensionsView = ({
       newKey += `_${dimFilters.extraCode.toUpperCase()}`;
     }
 
-    const connSuffix = activeMode === "bell" ? variantUpper : "Fitting";
-    // OUDE FOUT: Hier werd connSuffix 'Fitting' in fitting modus, waardoor hij Elbow_Fitting zocht ipv Elbow_TB
-    // CORRECTIE: We geven variantUpper (TB/CB) door
     const blueprint = getActiveBlueprint(
       variantUpper,
       dimFilters.extraCode,
@@ -309,7 +273,7 @@ const DimensionsView = ({
     );
     let fields = blueprint.fields || [];
 
-    // Fallback velden
+    // Fallbacks
     if (fields.length === 0) {
       if (activeMode === "bell") {
         if (bellSubType === "tb") fields = ["B1", "B2", "BA", "r1", "alpha"];
@@ -367,87 +331,86 @@ const DimensionsView = ({
     }
   };
 
+  // --- AANGEPASTE RENDER FUNCTIE MET STRIKTE VOLGORDE ---
   const renderFields = () => {
     if (!editingDim) return null;
+
+    // De velden die daadwerkelijk in het document zitten
     const docFields = Object.keys(editingDim).filter(
       (k) => !["id", "type", "pressure", "diameter"].includes(k)
     );
-    const groupedFields = {
-      socket: [],
-      dimensions: [],
-      mounting: [],
-      other: [],
-      rest: [],
-    };
 
-    docFields.forEach((field) => {
-      const groupKey = FIELD_TO_GROUP_MAP[field];
-      if (groupKey && groupedFields[groupKey])
-        groupedFields[groupKey].push(field);
-      else groupedFields.rest.push(field);
-    });
+    let blueprintFields = [];
 
-    if (activeMode === "bell") {
-      groupedFields.socket = [...groupedFields.socket, ...groupedFields.rest];
-      groupedFields.rest = [];
+    // Probeer de blauwdruk te achterhalen
+    if (editingDim.id) {
+      const parts = editingDim.id.split("_");
+      let type = activeMode === "fitting" ? parts[0] : null;
+      if (!type && activeMode === "bell") type = null;
+
+      const conn = bellSubType.toUpperCase();
+      let extraCode = dimFilters.extraCode || "";
+
+      const bp = getActiveBlueprint(conn, extraCode, type);
+      if (bp && bp.fields) {
+        blueprintFields = bp.fields;
+      }
     }
+
+    // --- CRUCIALE SORTERING ---
+    // We willen de volgorde van blueprintFields aanhouden.
+    // Velden die in het document zitten maar niet in de blauwdruk, komen erachteraan.
+
+    const sortedFields = docFields.sort((a, b) => {
+      const indexA = blueprintFields.indexOf(a);
+      const indexB = blueprintFields.indexOf(b);
+
+      // Als beide in de blauwdruk staan, gebruik de volgorde van de blauwdruk
+      if (indexA !== -1 && indexB !== -1) {
+        return indexA - indexB;
+      }
+
+      // Als A in blauwdruk staat (en B niet), komt A eerst
+      if (indexA !== -1) return -1;
+
+      // Als B in blauwdruk staat (en A niet), komt B eerst
+      if (indexB !== -1) return 1;
+
+      // Als geen van beide in de blauwdruk staat, alfabetisch sorteren
+      return a.localeCompare(b);
+    });
 
     return (
       <div className="space-y-6">
-        {Object.entries(GROUP_CONFIG).map(([groupKey, config]) => {
-          const fields = groupedFields[groupKey];
-          if (!fields || fields.length === 0) return null;
-          return (
-            <div
-              key={groupKey}
-              className={`p-5 rounded-2xl border ${config.color}`}
-            >
-              <h5 className="font-black text-xs uppercase tracking-widest mb-4 opacity-80 flex items-center gap-2">
-                {config.title}
-              </h5>
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                {fields.map((key) => (
-                  <div key={key} className="relative">
-                    <label className="block text-[10px] font-bold uppercase mb-1 opacity-60">
-                      {DIMENSION_LABELS[key] || key}
-                    </label>
-                    <input
-                      className="w-full bg-white/50 border border-current/20 rounded-xl px-3 py-2.5 text-sm font-bold focus:bg-white focus:ring-2 focus:ring-current/20 outline-none transition-all"
-                      value={editingDim[key] || ""}
-                      onChange={(e) =>
-                        setEditingDim({ ...editingDim, [key]: e.target.value })
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        <div className="p-6 rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <h5 className="font-black text-sm uppercase tracking-widest mb-6 opacity-70 flex items-center gap-2 text-slate-600">
+            <Box size={18} />
+            Specificaties & Afmetingen
+          </h5>
 
-        {groupedFields.rest.length > 0 && (
-          <div className="p-5 rounded-2xl border bg-gray-50 border-gray-200">
-            <h5 className="font-black text-xs text-gray-500 uppercase tracking-widest mb-4">
-              Extra Velden
-            </h5>
-            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-              {groupedFields.rest.map((key) => (
-                <div key={key}>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
-                    {key}
-                  </label>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-6">
+            {sortedFields.map((key) => (
+              <div key={key} className="relative group">
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5 transition-colors group-focus-within:text-blue-600">
+                  {DIMENSION_LABELS[key] || key}
+                </label>
+                <div className="relative">
                   <input
-                    className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-bold outline-none focus:border-gray-400"
-                    value={editingDim[key]}
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all placeholder:text-slate-300"
+                    placeholder="-"
+                    value={editingDim[key] || ""}
                     onChange={(e) =>
                       setEditingDim({ ...editingDim, [key]: e.target.value })
                     }
                   />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-300 pointer-events-none">
+                    mm
+                  </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
-        )}
+        </div>
       </div>
     );
   };
@@ -481,7 +444,6 @@ const DimensionsView = ({
           ))}
         </div>
 
-        {/* 2. SUB-NAVIGATIE */}
         {(activeMode === "bell" || activeMode === "fitting") && (
           <div className="mt-4 pt-4 border-t border-slate-100 flex gap-4 items-center">
             <span className="text-xs font-black text-slate-400 uppercase tracking-widest pl-2">
@@ -511,7 +473,6 @@ const DimensionsView = ({
       </div>
 
       <div className="w-full">
-        {/* VIEW: BORE DIMENSIONS */}
         {activeMode === "bore" && (
           <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm min-h-[500px]">
             <Suspense
@@ -526,7 +487,6 @@ const DimensionsView = ({
           </div>
         )}
 
-        {/* VIEW: TOLERANTIES */}
         {activeMode === "tolerance" && (
           <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm min-h-[500px]">
             <Suspense
@@ -544,10 +504,8 @@ const DimensionsView = ({
           </div>
         )}
 
-        {/* VIEW: EDITOR (BELL & FITTING) */}
         {(activeMode === "bell" || activeMode === "fitting") && (
           <div className="flex flex-col lg:flex-row gap-6 items-start h-[calc(100vh-250px)]">
-            {/* LINKER KOLOM: LIJST */}
             <div className="w-full lg:w-1/3 flex flex-col gap-4 h-full">
               <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 shrink-0">
                 <h4 className="font-black text-slate-800 mb-3 text-xs uppercase tracking-wider">
@@ -567,13 +525,8 @@ const DimensionsView = ({
                       }
                     >
                       <option value="">- Kies Fitting Type -</option>
-                      {libraryData.product_names
-                        .filter(
-                          (t) =>
-                            !t.includes("_Socket") &&
-                            !t.includes("_Spiggot") &&
-                            t !== "Algemeen"
-                        )
+                      {(libraryData?.product_names || [])
+                        .filter((t) => t !== "Algemeen")
                         .map((t) => (
                           <option key={t} value={t}>
                             {t}
@@ -630,12 +583,11 @@ const DimensionsView = ({
                     }
                   >
                     <option value="">- Geen Extra Code -</option>
-                    {libraryData.codes &&
-                      libraryData.codes.map((code) => (
-                        <option key={code} value={code}>
-                          {code}
-                        </option>
-                      ))}
+                    {(libraryData?.extraCodes || []).map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <button
@@ -646,7 +598,6 @@ const DimensionsView = ({
                 </button>
               </div>
 
-              {/* Scrollbare Lijst */}
               <div className="bg-white rounded-3xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
                 <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                   <div className="relative">
@@ -703,11 +654,9 @@ const DimensionsView = ({
               </div>
             </div>
 
-            {/* RECHTER KOLOM: EDITOR */}
             <div className="flex-1 h-full overflow-y-auto custom-scrollbar pr-2">
               {editingDim ? (
                 <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-100 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                  {/* Header Editor */}
                   <div className="flex justify-between items-start mb-6 pb-6 border-b border-slate-100">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
@@ -729,74 +678,7 @@ const DimensionsView = ({
                     </button>
                   </div>
 
-                  {/* Template Knoppen */}
-                  <div className="mb-8 p-4 bg-blue-50 rounded-2xl border border-blue-100 flex flex-wrap gap-3 items-center">
-                    <div className="flex items-center gap-2 text-blue-700 font-bold text-xs mr-2">
-                      <Copy size={16} />
-                      <span>Kopieer velden van:</span>
-                    </div>
-
-                    <select
-                      className="bg-white border border-blue-200 rounded-lg px-3 py-2 text-xs font-bold text-blue-900 outline-none focus:ring-2 focus:ring-blue-300"
-                      value={templateSource.type}
-                      onChange={(e) =>
-                        setTemplateSource({
-                          ...templateSource,
-                          type: e.target.value,
-                        })
-                      }
-                    >
-                      <option value="Algemeen">Algemeen</option>
-                      {libraryData.product_names
-                        .filter((p) => p !== "Algemeen")
-                        .map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                    </select>
-
-                    <select
-                      className="bg-white border border-blue-200 rounded-lg px-3 py-2 text-xs font-bold text-blue-900 outline-none focus:ring-2 focus:ring-blue-300"
-                      value={templateSource.conn}
-                      onChange={(e) =>
-                        setTemplateSource({
-                          ...templateSource,
-                          conn: e.target.value,
-                        })
-                      }
-                    >
-                      <option value="">- Kies Mof -</option>
-                      {libraryData.connections.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-
-                    <button
-                      onClick={() => {
-                        const key = `${templateSource.type}_${templateSource.conn}`;
-                        const bp = blueprints[key];
-                        if (bp && bp.fields) {
-                          const newDim = { id: editingDim.id };
-                          // Behoud bestaande waarden, voeg lege velden toe indien nodig
-                          bp.fields.forEach((f) => {
-                            newDim[f] =
-                              editingDim[f] !== undefined ? editingDim[f] : "";
-                          });
-                          setEditingDim(newDim);
-                        } else {
-                          alert(`Geen blauwdruk gevonden voor '${key}'`);
-                        }
-                      }}
-                      className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors shadow-md shadow-blue-200"
-                    >
-                      Toepassen
-                    </button>
-                  </div>
-
-                  {/* Formulier Velden */}
+                  {/* FORMULIER VELDEN */}
                   {renderFields()}
 
                   {/* Nieuw Veld Toevoegen (Dynamisch) */}
@@ -820,7 +702,6 @@ const DimensionsView = ({
                     </button>
                   </div>
 
-                  {/* Save Button */}
                   <div className="mt-6">
                     <button
                       onClick={saveItem}
