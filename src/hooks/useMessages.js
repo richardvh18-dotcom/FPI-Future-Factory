@@ -1,114 +1,146 @@
 import { useState, useEffect } from "react";
 import {
   collection,
-  query,
-  where,
-  onSnapshot,
   addDoc,
+  query,
+  onSnapshot,
+  deleteDoc,
   doc,
   updateDoc,
-  deleteDoc,
-  orderBy,
   serverTimestamp,
-  arrayUnion,
 } from "firebase/firestore";
 import { db, appId } from "../config/firebase";
 
+/**
+ * useMessages: Beheert de real-time stroom van berichten.
+ * Gebruikt lowercase filtering voor maximale betrouwbaarheid.
+ */
 export const useMessages = (user) => {
   const [messages, setMessages] = useState([]);
-  const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
-    if (!user) return;
-
-    const messagesRef = collection(db, "artifacts", appId, "messages");
-
-    // We luisteren naar berichten die:
-    // 1. Direct aan de gebruiker zijn gericht (to == user.email)
-    // 2. Aan 'all' zijn gericht
-    // 3. Door de gebruiker zelf zijn verzonden (zodat ze in 'verzonden' kunnen staan)
-
-    // Firestore heeft beperkingen met OR queries in snapshot listeners,
-    // dus we halen ze op met een client-side filter of meerdere queries.
-    // Voor eenvoud en performance in deze schaal halen we relevante berichten op.
-    // Omdat 'OR' queries complex zijn, doen we het simpel: We luisteren naar ALLES
-    // en filteren client-side (veiligheid moet via rules).
-    // Beter: We luisteren naar 2 queries en mergen ze, maar voor nu is dit de 'chat-like' aanpak.
-
-    const q = query(messagesRef, orderBy("timestamp", "desc"));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allMessages = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-
-      // Filter voor huidige gebruiker
-      const myMessages = allMessages.filter(
-        (msg) =>
-          msg.to === user.email || msg.to === "all" || msg.from === user.email
-      );
-
-      setMessages(myMessages);
-
-      // Tel ongelezen berichten (alleen inkomend)
-      const unread = myMessages.filter((msg) => {
-        const isIncoming = msg.to === user.email || msg.to === "all";
-        if (!isIncoming) return false;
-
-        // Check of gelezen
-        if (msg.readBy && Array.isArray(msg.readBy)) {
-          return !msg.readBy.includes(user.email);
-        }
-        return !msg.read; // Fallback voor oude structuur
-      }).length;
-
-      setUnreadCount(unread);
+    // Stop als er geen gebruiker of e-mail bekend is
+    if (!user || !user.email) {
       setLoading(false);
-    });
+      return;
+    }
+
+    const myEmail = user.email.toLowerCase();
+
+    // RULE 1: Correct pad naar publieke data
+    const colRef = collection(
+      db,
+      "artifacts",
+      appId,
+      "public",
+      "data",
+      "messages"
+    );
+
+    // We luisteren naar ALLE berichten en filteren in de browser (Rule 2 conform)
+    const unsubscribe = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const allMsgs = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+
+        // Sorteer op tijd (meest recente eerst)
+        allMsgs.sort((a, b) => {
+          const timeA = a.timestamp?.seconds || 0;
+          const timeB = b.timestamp?.seconds || 0;
+          return timeB - timeA;
+        });
+
+        setMessages(allMsgs);
+
+        // Bereken ongelezen berichten voor de huidige gebruiker
+        const unread = allMsgs.filter((m) => {
+          const recipient = (m.to || "").toLowerCase();
+          const sender = (m.from || "").toLowerCase();
+          // Bericht is voor mij of iedereen, is nog niet gelezen, en niet door mijzelf gestuurd
+          return (
+            (recipient === myEmail || recipient === "all") &&
+            !m.read &&
+            sender !== myEmail
+          );
+        }).length;
+
+        setUnreadCount(unread);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Fout bij ophalen berichten:", error);
+        setLoading(false);
+      }
+    );
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, user?.email]);
 
-  // --- ACTIES ---
-
-  const sendMessage = async (to, subject, body) => {
-    if (!user) return;
-
-    await addDoc(collection(db, "artifacts", appId, "messages"), {
-      from: user.email,
-      fromName: user.displayName || user.email.split("@")[0],
-      to,
-      subject,
-      body,
-      timestamp: serverTimestamp(),
-      readBy: [], // Array van emails die het gelezen hebben
-    });
+  /**
+   * Verzendt bericht en forceert lowercase voor adressen.
+   */
+  const sendMessage = async (messageData) => {
+    try {
+      const colRef = collection(
+        db,
+        "artifacts",
+        appId,
+        "public",
+        "data",
+        "messages"
+      );
+      await addDoc(colRef, {
+        ...messageData,
+        to: messageData.to.toLowerCase(),
+        from: messageData.from.toLowerCase(),
+        timestamp: serverTimestamp(),
+        read: false,
+      });
+      return { success: true };
+    } catch (error) {
+      console.error("Verzenden mislukt:", error);
+      throw error;
+    }
   };
 
-  const markAsRead = async (messageId, currentReadBy = []) => {
-    if (!user) return;
-
-    const msgRef = doc(db, "artifacts", appId, "messages", messageId);
-
-    // Voeg gebruiker toe aan readBy array
-    await updateDoc(msgRef, {
-      readBy: arrayUnion(user.email),
-      read: true, // Legacy support
-    });
+  const markAsRead = async (msgId) => {
+    try {
+      const docRef = doc(
+        db,
+        "artifacts",
+        appId,
+        "public",
+        "data",
+        "messages",
+        msgId
+      );
+      await updateDoc(docRef, { read: true });
+    } catch (error) {
+      console.error("Fout bij markeren als gelezen:", error);
+    }
   };
 
-  const deleteMessage = async (messageId) => {
-    await deleteDoc(doc(db, "artifacts", appId, "messages", messageId));
+  const deleteMessage = async (msgId) => {
+    try {
+      await deleteDoc(
+        doc(db, "artifacts", appId, "public", "data", "messages", msgId)
+      );
+    } catch (error) {
+      console.error("Fout bij verwijderen bericht:", error);
+    }
   };
 
   return {
     messages,
-    unreadCount,
     sendMessage,
     markAsRead,
     deleteMessage,
+    unreadCount,
     loading,
   };
 };

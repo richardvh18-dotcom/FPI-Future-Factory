@@ -1,21 +1,26 @@
-import React, { useState, useEffect, Suspense, lazy } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Loader2,
   Edit3,
   Trash2,
   Ruler,
   Search,
-  Info,
   Layout,
   Settings,
   ChevronRight,
+  ChevronDown,
   Plus,
-  Copy,
   Box,
+  Target,
+  Save,
+  RefreshCw,
+  Layers,
+  Database,
 } from "lucide-react";
 import {
   collection,
   getDocs,
+  getDoc,
   doc,
   setDoc,
   deleteDoc,
@@ -25,16 +30,12 @@ import {
   appId as firebaseAppId,
 } from "../../../config/firebase";
 
-// Lazy imports voor sub-componenten
-const AdminToleranceView = lazy(() => import("../AdminToleranceView"));
-const BoreDimensionsManager = lazy(() => import("../BoreDimensionsManager"));
-
 // --- CONFIGURATIE ---
 const VIEW_MODES = [
   { id: "bell", label: "Bell (Mof)", icon: <Layout size={18} /> },
   { id: "fitting", label: "Fitting", icon: <Ruler size={18} /> },
-  { id: "bore", label: "Bore", icon: <Settings size={18} /> },
-  { id: "tolerance", label: "Toleranties", icon: <Info size={18} /> },
+  { id: "bore", label: "Bore", icon: <Target size={18} /> },
+  { id: "tolerance", label: "Toleranties", icon: <Settings size={18} /> },
 ];
 
 const SUB_TYPES_BELL = [
@@ -42,25 +43,32 @@ const SUB_TYPES_BELL = [
   { id: "tb", label: "TB", collection: "fitting_specs" },
 ];
 
-// Uitgebreide label mapping voor betere leesbaarheid
 const DIMENSION_LABELS = {
   B1: "B1 (Mofdiepte)",
-  B2: "B2 (Insteek)",
-  BA: "BA",
-  A1: "A1",
-  TWcb: "TW (Wanddikte CB)",
-  TWtb: "TW (Wanddikte TB)",
+  B2: "B2 (Insteekdiepte)",
+  BA: "BA (Buitendiameter Mof)",
+  A1: "A1 (Wanddikte Mof)",
+  TWcb: "TWcb (Wanddikte CB)",
+  Twtb: "Twtb (Wanddikte TB)",
   r1: "r1 (Radius)",
-  BD: "BD (Buitendiameter)",
-  W: "W (Wanddikte)",
+  BD: "BD (Buitendiameter Body)",
+  W: "W (Wanddikte Body)",
   L: "L (Lengte)",
   Z: "Z (Z-maat)",
-  L1: "L1",
-  L2: "L2",
-  alpha: "Hoek (α)",
-  d: "d (Diameter)",
-  k: "k",
-  b: "b",
+  alpha: "α (Hoek)",
+  TWtbco: "TWtbco (Wanddikte Coupler TB)",
+  BDco: "BDco (Buitendiameter Coupler)",
+  Wco: "Wco (Wanddikte TB)",
+  TWco: "TWco (Wanddikte Coupler CB)",
+};
+
+const FIELD_PRIORITY = {
+  bell_tb_algemeen: ["B1", "B2", "BA", "r1", "alpha"],
+  fitting_tb_standard: ["Twtb", "BD", "W"],
+  fitting_tb_coupler: ["TWtbco", "BDco", "Wco"],
+  bell_cb_algemeen: ["B1", "B2", "BA", "A1"],
+  fitting_cb_standard: ["TWcb", "BD", "W"],
+  fitting_cb_coupler: ["TWco", "BDco", "W"],
 };
 
 const DimensionsView = ({
@@ -68,8 +76,6 @@ const DimensionsView = ({
   blueprints,
   db: propDb,
   appId: propAppId,
-  bellDimensions,
-  boreDimensions,
   productRange,
 }) => {
   const db = propDb || firebaseDb;
@@ -77,456 +83,531 @@ const DimensionsView = ({
 
   const [activeMode, setActiveMode] = useState("bell");
   const [bellSubType, setBellSubType] = useState("cb");
-
   const [dimData, setDimData] = useState([]);
   const [editingDim, setEditingDim] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [listSearch, setListSearch] = useState("");
 
+  const [localBore, setLocalBore] = useState({});
+  const [localTols, setLocalTols] = useState({});
+  const [expandedTols, setExpandedTols] = useState({});
+  const [selectedTolPath, setSelectedTolPath] = useState(null);
   const [dimFilters, setDimFilters] = useState({
     pn: "",
     id: "",
     extraCode: "",
     type: "",
   });
-  const [templateSource, setTemplateSource] = useState({
-    type: "Algemeen",
-    conn: "",
-  });
 
-  const [loading, setLoading] = useState(false);
-  const [listSearch, setListSearch] = useState("");
-
-  const getCollectionName = () => {
-    if (activeMode === "fitting") return "standard_fitting_specs";
-    if (activeMode === "bell") {
-      return bellSubType === "cb" ? "cb_dimensions" : "fitting_specs";
-    }
-    return null;
-  };
+  // --- DATA SYNC MET FIX VOOR OVEN SEGMENTEN ---
+  useEffect(() => {
+    const fetchMaster = async () => {
+      if (activeMode === "bore" || activeMode === "tolerance") {
+        setLoading(true);
+        // FIX: Bore dimensions moet ook onder de 'settings' collectie vallen of een doc-id hebben
+        const colPath =
+          activeMode === "bore"
+            ? "settings/bore_dimensions"
+            : "settings/tolerances_master";
+        try {
+          const snap = await getDoc(
+            doc(db, "artifacts", appId, "public", "data", ...colPath.split("/"))
+          );
+          if (snap.exists()) {
+            if (activeMode === "bore") setLocalBore(snap.data());
+            else setLocalTols(snap.data());
+          }
+        } catch (e) {
+          console.error("Fout bij ophalen master data:", e);
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+    fetchMaster();
+  }, [activeMode, appId, db]);
 
   useEffect(() => {
     if (activeMode === "bell" || activeMode === "fitting") {
-      loadData();
-    }
-  }, [activeMode, bellSubType, appId]);
-
-  const loadData = async () => {
-    const colName = getCollectionName();
-    if (!colName || !appId) return;
-    setLoading(true);
-    setDimData([]);
-    setEditingDim(null);
-    try {
-      const querySnapshot = await getDocs(
-        collection(db, "artifacts", appId, "public", "data", colName)
-      );
-      const data = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-
-      let filtered = data;
-      if (activeMode === "fitting") {
-        const variant = bellSubType.toUpperCase();
-        filtered = data.filter(
-          (item) => item.id && item.id.includes(`_${variant}_`)
-        );
-      }
-
-      filtered.sort((a, b) =>
-        a.id.localeCompare(b.id, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        })
-      );
-      setDimData(filtered);
-    } catch (error) {
-      console.error("Fout bij laden:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getAvailablePNs = () => {
-    if (!productRange || Object.keys(productRange).length === 0)
-      return libraryData?.pns || [];
-
-    const pns = new Set();
-    const connKey = bellSubType.toUpperCase();
-    const rangeForConn =
-      productRange[connKey] || productRange[`${connKey}/${connKey}`];
-
-    if (rangeForConn) {
-      Object.keys(rangeForConn).forEach((pn) => {
-        if (!isNaN(Number(pn))) pns.add(Number(pn));
-      });
-    }
-
-    if (pns.size === 0) return libraryData?.pns || [];
-    return Array.from(pns).sort((a, b) => a - b);
-  };
-
-  const getAvailableIDs = () => {
-    if (!dimFilters.pn) return [];
-    if (!productRange || Object.keys(productRange).length === 0)
-      return libraryData?.diameters || [];
-
-    const pnKey = String(dimFilters.pn);
-    const connKey = bellSubType.toUpperCase();
-    const allIds = new Set();
-    const rangeForConn =
-      productRange[connKey] || productRange[`${connKey}/${connKey}`];
-    const rangeForPN = rangeForConn?.[pnKey];
-
-    if (rangeForPN) {
-      if (activeMode === "fitting" && dimFilters.type) {
-        const typeKey = dimFilters.type;
-        const baseType = typeKey.split("_")[0];
-        const keysToCheck = [
-          typeKey,
-          baseType,
-          `${baseType}_Socket`,
-          `${baseType}_Spiggot`,
-        ];
-
-        keysToCheck.forEach((key) => {
-          if (rangeForPN[key] && Array.isArray(rangeForPN[key])) {
-            rangeForPN[key].forEach((id) => allIds.add(Number(id)));
+      const loadList = async () => {
+        const colName =
+          activeMode === "fitting"
+            ? "standard_fitting_specs"
+            : bellSubType === "cb"
+            ? "cb_dimensions"
+            : "fitting_specs";
+        setLoading(true);
+        try {
+          const querySnapshot = await getDocs(
+            collection(db, "artifacts", appId, "public", "data", colName)
+          );
+          const data = querySnapshot.docs.map((d) => ({
+            id: d.id,
+            ...d.data(),
+          }));
+          let filtered = data;
+          if (activeMode === "fitting") {
+            const variant = bellSubType.toUpperCase();
+            filtered = data.filter((item) => item.id?.includes(`_${variant}_`));
           }
-        });
-      } else {
-        Object.values(rangeForPN).forEach((ids) => {
-          if (Array.isArray(ids)) ids.forEach((id) => allIds.add(Number(id)));
-        });
-      }
-    }
-
-    if (allIds.size === 0 && libraryData?.diameters)
-      return libraryData.diameters;
-    return Array.from(allIds).sort((a, b) => a - b);
-  };
-
-  const getActiveBlueprint = (connSuffix, extraCode, productType) => {
-    if (productType) {
-      const typeVariations = [
-        productType,
-        `${productType}_Socket`,
-        productType.split("_")[0],
-      ];
-
-      for (const type of typeVariations) {
-        if (extraCode) {
-          let key = `${type}_${connSuffix}_${extraCode}`;
-          if (blueprints[key]) return blueprints[key];
+          setDimData(
+            filtered.sort((a, b) =>
+              a.id.localeCompare(b.id, undefined, { numeric: true })
+            )
+          );
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setLoading(false);
         }
-        let keyDouble = `${type}_${connSuffix}/${connSuffix}`;
-        if (blueprints[keyDouble]) return blueprints[keyDouble];
-        let keySingle = `${type}_${connSuffix}`;
-        if (blueprints[keySingle]) return blueprints[keySingle];
-      }
+      };
+      loadList();
     }
+  }, [activeMode, bellSubType, appId, db]);
 
-    if (extraCode) {
-      let keyWithCode = `Algemeen_${connSuffix}_${extraCode}`;
-      if (blueprints[keyWithCode]) return blueprints[keyWithCode];
+  const getSortedFields = (keys) => {
+    let priority = [];
+    const isTB = bellSubType === "tb";
+    const type = editingDim?.type?.toLowerCase() || "";
+    if (activeMode === "bell")
+      priority = isTB
+        ? FIELD_PRIORITY.bell_tb_algemeen
+        : FIELD_PRIORITY.bell_cb_algemeen;
+    else {
+      if (type.includes("coupler"))
+        priority = isTB
+          ? FIELD_PRIORITY.fitting_tb_coupler
+          : FIELD_PRIORITY.fitting_cb_coupler;
+      else
+        priority = isTB
+          ? FIELD_PRIORITY.fitting_tb_standard
+          : FIELD_PRIORITY.fitting_cb_standard;
     }
-
-    let bpKeyDouble = `Algemeen_${connSuffix}/${connSuffix}`;
-    if (blueprints[bpKeyDouble]) return blueprints[bpKeyDouble];
-
-    let bpKey = `Algemeen_${connSuffix}`;
-    if (blueprints[bpKey]) return blueprints[bpKey];
-
-    return blueprints["Algemeen"] || { fields: [] };
-  };
-
-  const createNewItem = () => {
-    if (!dimFilters.pn || !dimFilters.id) {
-      alert("Selecteer eerst een Drukklasse (PN) en Diameter (ID).");
-      return;
-    }
-
-    let newKey = "";
-    const variantUpper = bellSubType.toUpperCase();
-    let selectedType = null;
-
-    if (activeMode === "fitting") {
-      if (!dimFilters.type) {
-        alert("Selecteer een Product Type (bijv. Elbow).");
-        return;
-      }
-      selectedType = dimFilters.type;
-      newKey = `${selectedType.toUpperCase()}_${variantUpper}_PN${
-        dimFilters.pn
-      }_ID${dimFilters.id}`;
-    } else {
-      newKey = `${variantUpper}_PN${dimFilters.pn}_ID${dimFilters.id}`;
-    }
-
-    if (dimFilters.extraCode) {
-      newKey += `_${dimFilters.extraCode.toUpperCase()}`;
-    }
-
-    const blueprint = getActiveBlueprint(
-      variantUpper,
-      dimFilters.extraCode,
-      selectedType
-    );
-    let fields = blueprint.fields || [];
-
-    // Fallbacks
-    if (fields.length === 0) {
-      if (activeMode === "bell") {
-        if (bellSubType === "tb") fields = ["B1", "B2", "BA", "r1", "alpha"];
-        else fields = ["B1", "B2", "BA", "A1"];
-      } else {
-        fields = ["L", "Z", "BD", "W"];
-        if (bellSubType === "cb") fields.push("TWcb");
-        if (bellSubType === "tb") fields.push("TWtb");
-      }
-    }
-
-    const newDoc = {
-      id: newKey,
-      type: activeMode === "fitting" ? dimFilters.type : "Bell",
-      pressure: Number(dimFilters.pn),
-      diameter: Number(dimFilters.id),
-    };
-
-    fields.forEach((field) => {
-      newDoc[field] = "";
+    return [...keys].sort((a, b) => {
+      const idxA = priority.indexOf(a);
+      const idxB = priority.indexOf(b);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return a.localeCompare(b);
     });
-    setEditingDim(newDoc);
   };
 
   const saveItem = async () => {
-    if (!editingDim || !editingDim.id) return;
+    if (!editingDim) return;
     setLoading(true);
-    const colName = getCollectionName();
+    const colName =
+      activeMode === "fitting"
+        ? "standard_fitting_specs"
+        : bellSubType === "cb"
+        ? "cb_dimensions"
+        : "fitting_specs";
     try {
       await setDoc(
         doc(db, "artifacts", appId, "public", "data", colName, editingDim.id),
         editingDim
       );
-      await loadData();
+      alert("✅ Product opgeslagen");
     } catch (e) {
-      alert("❌ Fout bij opslaan: " + e.message);
+      alert("❌ Fout: " + e.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const deleteItem = async (id) => {
-    if (!window.confirm(`Weet je zeker dat je ${id} wilt verwijderen?`)) return;
+  const saveMasterData = async (type) => {
     setLoading(true);
-    const colName = getCollectionName();
     try {
-      await deleteDoc(
-        doc(db, "artifacts", appId, "public", "data", colName, id)
-      );
-      loadData();
+      // FIX: Zorg dat het pad naar een document wijst (even aantal segmenten)
+      const path =
+        type === "bore"
+          ? [
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "settings",
+              "bore_dimensions",
+            ]
+          : [
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "settings",
+              "tolerances_master",
+            ];
+      await setDoc(doc(db, ...path), type === "bore" ? localBore : localTols, {
+        merge: true,
+      });
+      alert("✅ Master data bijgewerkt!");
     } catch (e) {
-      alert("❌ Fout bij verwijderen.");
+      alert("❌ Fout: " + e.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // --- AANGEPASTE RENDER FUNCTIE MET STRIKTE VOLGORDE ---
-  const renderFields = () => {
-    if (!editingDim) return null;
-
-    // De velden die daadwerkelijk in het document zitten
-    const docFields = Object.keys(editingDim).filter(
-      (k) => !["id", "type", "pressure", "diameter"].includes(k)
-    );
-
-    let blueprintFields = [];
-
-    // Probeer de blauwdruk te achterhalen
-    if (editingDim.id) {
-      const parts = editingDim.id.split("_");
-      let type = activeMode === "fitting" ? parts[0] : null;
-      if (!type && activeMode === "bell") type = null;
-
-      const conn = bellSubType.toUpperCase();
-      let extraCode = dimFilters.extraCode || "";
-
-      const bp = getActiveBlueprint(conn, extraCode, type);
-      if (bp && bp.fields) {
-        blueprintFields = bp.fields;
-      }
+  const createNewItem = () => {
+    if (!dimFilters.pn || !dimFilters.id) return alert("Selecteer PN en ID.");
+    const variant = bellSubType.toUpperCase();
+    const typeLabel = activeMode === "fitting" ? dimFilters.type : "Bell";
+    const id =
+      activeMode === "fitting"
+        ? `${typeLabel.toUpperCase()}_${variant}_PN${dimFilters.pn}_ID${
+            dimFilters.id
+          }${dimFilters.extraCode ? "_" + dimFilters.extraCode : ""}`
+        : `${variant}_PN${dimFilters.pn}_ID${dimFilters.id}${
+            dimFilters.extraCode ? "_" + dimFilters.extraCode : ""
+          }`;
+    const newDoc = {
+      id,
+      type: typeLabel,
+      pressure: Number(dimFilters.pn),
+      diameter: Number(dimFilters.id),
+    };
+    let fields = [];
+    const isTB = bellSubType === "tb";
+    if (activeMode === "bell")
+      fields = isTB
+        ? FIELD_PRIORITY.bell_tb_algemeen
+        : FIELD_PRIORITY.bell_cb_algemeen;
+    else {
+      if (typeLabel.toLowerCase() === "coupler")
+        fields = isTB
+          ? FIELD_PRIORITY.fitting_tb_coupler
+          : FIELD_PRIORITY.fitting_cb_coupler;
+      else
+        fields = isTB
+          ? FIELD_PRIORITY.fitting_tb_standard
+          : FIELD_PRIORITY.fitting_cb_standard;
     }
-
-    // --- CRUCIALE SORTERING ---
-    // We willen de volgorde van blueprintFields aanhouden.
-    // Velden die in het document zitten maar niet in de blauwdruk, komen erachteraan.
-
-    const sortedFields = docFields.sort((a, b) => {
-      const indexA = blueprintFields.indexOf(a);
-      const indexB = blueprintFields.indexOf(b);
-
-      // Als beide in de blauwdruk staan, gebruik de volgorde van de blauwdruk
-      if (indexA !== -1 && indexB !== -1) {
-        return indexA - indexB;
-      }
-
-      // Als A in blauwdruk staat (en B niet), komt A eerst
-      if (indexA !== -1) return -1;
-
-      // Als B in blauwdruk staat (en A niet), komt B eerst
-      if (indexB !== -1) return 1;
-
-      // Als geen van beide in de blauwdruk staat, alfabetisch sorteren
-      return a.localeCompare(b);
-    });
-
-    return (
-      <div className="space-y-6">
-        <div className="p-6 rounded-3xl border border-slate-200 bg-white shadow-sm">
-          <h5 className="font-black text-sm uppercase tracking-widest mb-6 opacity-70 flex items-center gap-2 text-slate-600">
-            <Box size={18} />
-            Specificaties & Afmetingen
-          </h5>
-
-          <div className="grid grid-cols-2 gap-x-6 gap-y-6">
-            {sortedFields.map((key) => (
-              <div key={key} className="relative group">
-                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5 transition-colors group-focus-within:text-blue-600">
-                  {DIMENSION_LABELS[key] || key}
-                </label>
-                <div className="relative">
-                  <input
-                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all placeholder:text-slate-300"
-                    placeholder="-"
-                    value={editingDim[key] || ""}
-                    onChange={(e) =>
-                      setEditingDim({ ...editingDim, [key]: e.target.value })
-                    }
-                  />
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-300 pointer-events-none">
-                    mm
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
+    fields.forEach((f) => (newDoc[f] = ""));
+    setEditingDim(newDoc);
   };
 
-  const filteredData = dimData.filter((d) =>
+  const filteredData = (dimData || []).filter((d) =>
     d.id.toLowerCase().includes(listSearch.toLowerCase())
   );
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 w-full max-w-7xl mx-auto">
-      {/* 1. HOOFDNAVIGATIE */}
-      <div className="bg-white p-4 rounded-3xl shadow-sm border border-slate-200">
-        <div className="flex flex-wrap gap-2">
+    <div className="space-y-6 animate-in fade-in duration-500 w-full max-w-7xl mx-auto h-[calc(100vh-140px)] flex flex-col">
+      <div className="bg-white p-3 rounded-[28px] shadow-sm border border-slate-200 flex justify-between items-center shrink-0">
+        <div className="flex gap-2">
           {VIEW_MODES.map((mode) => (
             <button
               key={mode.id}
               onClick={() => {
                 setActiveMode(mode.id);
                 setEditingDim(null);
-                setDimFilters({ pn: "", id: "", extraCode: "", type: "" });
+                setSelectedTolPath(null);
               }}
-              className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-sm font-bold transition-all ${
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${
                 activeMode === mode.id
-                  ? "bg-slate-900 text-white shadow-md transform scale-105"
-                  : "bg-slate-50 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                  ? "bg-slate-900 text-white shadow-lg"
+                  : "bg-slate-50 text-slate-400 hover:text-slate-600"
               }`}
             >
-              {mode.icon}
-              {mode.label}
+              {mode.icon} {mode.label}
             </button>
           ))}
         </div>
-
         {(activeMode === "bell" || activeMode === "fitting") && (
-          <div className="mt-4 pt-4 border-t border-slate-100 flex gap-4 items-center">
-            <span className="text-xs font-black text-slate-400 uppercase tracking-widest pl-2">
-              Variant:
-            </span>
-            <div className="flex bg-slate-100 p-1 rounded-xl">
-              {SUB_TYPES_BELL.map((sub) => (
-                <button
-                  key={sub.id}
-                  onClick={() => {
-                    setBellSubType(sub.id);
-                    setEditingDim(null);
-                    setDimFilters({ pn: "", id: "", extraCode: "", type: "" });
-                  }}
-                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-                    bellSubType === sub.id
-                      ? "bg-white text-emerald-600 shadow-sm"
-                      : "text-slate-500 hover:text-slate-700"
-                  }`}
-                >
-                  {sub.label}
-                </button>
-              ))}
-            </div>
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            {SUB_TYPES_BELL.map((sub) => (
+              <button
+                key={sub.id}
+                onClick={() => setBellSubType(sub.id)}
+                className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
+                  bellSubType === sub.id
+                    ? "bg-white text-blue-600 shadow-sm"
+                    : "text-slate-400"
+                }`}
+              >
+                {sub.label}
+              </button>
+            ))}
           </div>
         )}
       </div>
 
-      <div className="w-full">
-        {activeMode === "bore" && (
-          <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm min-h-[500px]">
-            <Suspense
-              fallback={
-                <div className="p-10 text-center">
-                  <Loader2 className="animate-spin inline" /> Laden...
+      <div className="flex-1 overflow-hidden">
+        {activeMode === "tolerance" && (
+          <div className="flex gap-6 h-full items-start overflow-hidden">
+            <div className="w-1/3 h-full bg-white rounded-[32px] shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+              <div className="p-5 border-b border-slate-100 bg-slate-50/50 space-y-3">
+                <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest">
+                  Tolerantie Groepen
+                </h3>
+                <div className="relative">
+                  <Search
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300"
+                    size={14}
+                  />
+                  <input
+                    className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none"
+                    placeholder="Zoek..."
+                    value={listSearch}
+                    onChange={(e) => setListSearch(e.target.value)}
+                  />
                 </div>
-              }
-            >
-              <BoreDimensionsManager boreDimensions={boreDimensions} />
-            </Suspense>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 custom-scrollbar space-y-2">
+                {Object.entries(localTols)
+                  .sort()
+                  .map(([type, subtypes]) => (
+                    <div key={type} className="space-y-1">
+                      <button
+                        onClick={() =>
+                          setExpandedTols((p) => ({ ...p, [type]: !p[type] }))
+                        }
+                        className={`w-full flex items-center justify-between p-3 rounded-2xl transition-all ${
+                          expandedTols[type]
+                            ? "bg-slate-900 text-white shadow-md"
+                            : "bg-slate-50 text-slate-600"
+                        }`}
+                      >
+                        <span className="text-[11px] font-black uppercase tracking-widest flex items-center gap-2">
+                          <Box size={14} /> {type}
+                        </span>
+                        {expandedTols[type] ? (
+                          <ChevronDown size={14} />
+                        ) : (
+                          <ChevronRight size={14} />
+                        )}
+                      </button>
+                      {expandedTols[type] && (
+                        <div className="pl-4 py-1 space-y-1 border-l-2 border-slate-100 ml-4">
+                          {Object.entries(subtypes).map(([sub, pns]) => (
+                            <div key={sub}>
+                              <button
+                                onClick={() =>
+                                  setExpandedTols((p) => ({
+                                    ...p,
+                                    [type + "_" + sub]: !p[type + "_" + sub],
+                                  }))
+                                }
+                                className="w-full text-left p-2 text-xs font-bold text-slate-500 hover:text-blue-600 flex justify-between"
+                              >
+                                <span>{sub}</span>
+                                {expandedTols[type + "_" + sub] ? (
+                                  <ChevronDown size={12} />
+                                ) : (
+                                  <ChevronRight size={12} />
+                                )}
+                              </button>
+                              {expandedTols[type + "_" + sub] && (
+                                <div className="pl-4 space-y-2 pb-2">
+                                  {Object.entries(pns).map(([pn, ids]) => (
+                                    <div key={pn}>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase mb-1">
+                                        PN {pn}
+                                      </p>
+                                      <div className="grid grid-cols-2 gap-1">
+                                        {Object.keys(ids)
+                                          .sort((a, b) => Number(a) - Number(b))
+                                          .map((id) => (
+                                            <button
+                                              key={id}
+                                              onClick={() =>
+                                                setSelectedTolPath({
+                                                  type,
+                                                  sub,
+                                                  pn,
+                                                  id,
+                                                })
+                                              }
+                                              className={`p-1.5 rounded-lg text-[10px] font-bold border ${
+                                                selectedTolPath?.id === id &&
+                                                selectedTolPath?.pn === pn
+                                                  ? "bg-blue-600 text-white border-blue-600 shadow-md"
+                                                  : "bg-white text-slate-500 border-slate-100 hover:border-blue-200"
+                                              }`}
+                                            >
+                                              ID {id}
+                                            </button>
+                                          ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+            <div className="flex-1 h-full overflow-hidden">
+              {selectedTolPath ? (
+                <div className="bg-white rounded-[40px] shadow-2xl border border-slate-100 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-500">
+                  <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/30">
+                    <div>
+                      <h3 className="text-2xl font-black text-slate-900 tracking-tighter italic">
+                        ID {selectedTolPath.id}
+                      </h3>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                        {selectedTolPath.type} &gt; {selectedTolPath.sub} &gt;
+                        PN{selectedTolPath.pn}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => saveMasterData("tol")}
+                      className="bg-emerald-600 text-white px-8 py-3 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-emerald-700 shadow-xl flex items-center gap-2"
+                    >
+                      <Save size={18} /> Opslaan
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                    <div className="grid grid-cols-2 gap-8 max-w-3xl">
+                      {getSortedFields(
+                        Object.keys(
+                          localTols[selectedTolPath.type][selectedTolPath.sub][
+                            selectedTolPath.pn
+                          ][selectedTolPath.id] || {}
+                        )
+                      ).map((key) => (
+                        <div key={key} className="group">
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 group-focus-within:text-blue-500">
+                            {DIMENSION_LABELS[key] || key}
+                          </label>
+                          <div className="relative">
+                            <input
+                              className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold focus:bg-white focus:border-blue-500 outline-none transition-all"
+                              value={
+                                localTols[selectedTolPath.type][
+                                  selectedTolPath.sub
+                                ][selectedTolPath.pn][selectedTolPath.id][key]
+                              }
+                              onChange={(e) => {
+                                const updated = { ...localTols };
+                                updated[selectedTolPath.type][
+                                  selectedTolPath.sub
+                                ][selectedTolPath.pn][selectedTolPath.id][key] =
+                                  e.target.value;
+                                setLocalTols(updated);
+                              }}
+                            />
+                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-300">
+                              mm
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300 border-4 border-dashed border-slate-100 rounded-[50px] bg-white/50">
+                  <Layers size={80} className="mb-6 opacity-10" />
+                  <p className="font-black text-xl uppercase tracking-widest text-slate-400">
+                    Selecteer item
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {activeMode === "tolerance" && (
-          <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm min-h-[500px]">
-            <Suspense
-              fallback={
-                <div className="p-10 text-center">
-                  <Loader2 className="animate-spin inline" /> Laden...
-                </div>
-              }
-            >
-              <AdminToleranceView
-                bellDimensions={bellDimensions}
-                productRange={productRange}
-              />
-            </Suspense>
+        {activeMode === "bore" && (
+          <div className="bg-white rounded-[32px] border border-slate-200 shadow-sm overflow-hidden animate-in zoom-in-95 duration-300 max-w-4xl mx-auto">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tighter">
+                Bore Dimensions
+              </h3>
+              <button
+                onClick={() => saveMasterData("bore")}
+                className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-black text-xs uppercase flex items-center gap-2 hover:bg-emerald-700 shadow-lg"
+              >
+                <Save size={16} /> Opslaan
+              </button>
+            </div>
+            <div className="overflow-x-auto max-h-[calc(100vh-350px)] custom-scrollbar">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50 border-b border-slate-100 sticky top-0 z-10">
+                  <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                    <th className="px-8 py-4">DN</th>
+                    <th className="px-8 py-4">Target (mm)</th>
+                    <th className="px-8 py-4">Min (mm)</th>
+                    <th className="px-8 py-4">Max (mm)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {Object.entries(localBore)
+                    .sort(([a], [b]) => Number(a) - Number(b))
+                    .map(([dn, vals]) => (
+                      <tr key={dn} className="hover:bg-slate-50/50">
+                        <td className="px-8 py-4 font-black text-slate-700">
+                          ID {dn}
+                        </td>
+                        <td className="px-8 py-4">
+                          <input
+                            className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-bold w-24 focus:bg-white outline-none"
+                            value={vals?.target || 0}
+                            onChange={(e) =>
+                              setLocalBore({
+                                ...localBore,
+                                [dn]: {
+                                  ...vals,
+                                  target: Number(e.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-8 py-4">
+                          <input
+                            className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-bold w-24 focus:bg-white outline-none"
+                            value={vals?.min || 0}
+                            onChange={(e) =>
+                              setLocalBore({
+                                ...localBore,
+                                [dn]: { ...vals, min: Number(e.target.value) },
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-8 py-4">
+                          <input
+                            className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-bold w-24 focus:bg-white outline-none"
+                            value={vals?.max || 0}
+                            onChange={(e) =>
+                              setLocalBore({
+                                ...localBore,
+                                [dn]: { ...vals, max: Number(e.target.value) },
+                              })
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
         {(activeMode === "bell" || activeMode === "fitting") && (
-          <div className="flex flex-col lg:flex-row gap-6 items-start h-[calc(100vh-250px)]">
-            <div className="w-full lg:w-1/3 flex flex-col gap-4 h-full">
-              <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 shrink-0">
-                <h4 className="font-black text-slate-800 mb-3 text-xs uppercase tracking-wider">
-                  Nieuw Item
+          <div className="flex gap-6 h-full items-start overflow-hidden">
+            <div className="w-1/3 h-full flex flex-col gap-4 overflow-hidden">
+              <div className="bg-white p-5 rounded-[32px] shadow-sm border border-slate-200 shrink-0 space-y-4">
+                <h4 className="font-black text-slate-800 text-[10px] uppercase tracking-widest italic">
+                  Nieuw Item Aanmaken
                 </h4>
-                <div className="flex flex-col gap-2 mb-3">
+                <div className="space-y-2">
                   {activeMode === "fitting" && (
                     <select
-                      className="bg-slate-50 border border-slate-200 rounded-xl p-2 text-xs font-bold w-full outline-none focus:border-blue-500"
+                      className="w-full bg-slate-50 border border-slate-100 rounded-xl p-2.5 text-xs font-bold outline-none"
                       value={dimFilters.type}
                       onChange={(e) =>
-                        setDimFilters({
-                          ...dimFilters,
-                          type: e.target.value,
-                          id: "",
-                        })
+                        setDimFilters({ ...dimFilters, type: e.target.value })
                       }
                     >
                       <option value="">- Kies Fitting Type -</option>
-                      {(libraryData?.product_names || [])
-                        .filter((t) => t !== "Algemeen")
+                      {libraryData?.product_names
+                        ?.filter((t) => t !== "Algemeen")
                         .map((t) => (
                           <option key={t} value={t}>
                             {t}
@@ -534,10 +615,10 @@ const DimensionsView = ({
                         ))}
                     </select>
                   )}
-
                   <div className="flex gap-2">
                     <select
-                      className="bg-slate-50 border border-slate-200 rounded-xl p-2 text-xs font-bold w-1/3 outline-none focus:border-blue-500"
+                      className="w-1/3 bg-slate-50 border border-slate-100 rounded-xl p-2.5 text-xs font-bold"
+                      value={dimFilters.pn}
                       onChange={(e) =>
                         setDimFilters({
                           ...dimFilters,
@@ -545,186 +626,150 @@ const DimensionsView = ({
                           id: "",
                         })
                       }
-                      value={dimFilters.pn}
                     >
-                      <option value="">- PN -</option>
-                      {getAvailablePNs().map((pn) => (
+                      <option value="">PN</option>
+                      {libraryData?.pns?.map((pn) => (
                         <option key={pn} value={pn}>
-                          PN {pn}
+                          PN{pn}
                         </option>
                       ))}
                     </select>
-
                     <select
-                      className="bg-slate-50 border border-slate-200 rounded-xl p-2 text-xs font-bold flex-1 outline-none focus:border-blue-500 disabled:opacity-50"
+                      className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-2.5 text-xs font-bold"
+                      value={dimFilters.id}
                       onChange={(e) =>
                         setDimFilters({ ...dimFilters, id: e.target.value })
                       }
-                      value={dimFilters.id}
                       disabled={!dimFilters.pn}
                     >
-                      <option value="">- ID -</option>
-                      {getAvailableIDs().map((id) => (
+                      <option value="">ID</option>
+                      {libraryData?.diameters?.map((id) => (
                         <option key={id} value={id}>
-                          ID {id}
+                          ID{id}
                         </option>
                       ))}
                     </select>
                   </div>
-
-                  <select
-                    className="bg-slate-50 border border-slate-200 rounded-xl p-2 text-xs font-bold outline-none focus:border-blue-500"
-                    value={dimFilters.extraCode}
-                    onChange={(e) =>
-                      setDimFilters({
-                        ...dimFilters,
-                        extraCode: e.target.value,
-                      })
-                    }
-                  >
-                    <option value="">- Geen Extra Code -</option>
-                    {(libraryData?.extraCodes || []).map((code) => (
-                      <option key={code} value={code}>
-                        {code}
-                      </option>
-                    ))}
-                  </select>
                 </div>
                 <button
                   onClick={createNewItem}
-                  className="w-full bg-slate-900 text-white py-3 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-600 transition-all shadow-lg shadow-slate-200 hover:shadow-emerald-200"
+                  className="w-full bg-slate-900 text-white py-3 rounded-2xl text-[10px] font-black uppercase hover:bg-blue-600 transition-all shadow-xl"
                 >
-                  + Aanmaken
+                  + Toevoegen
                 </button>
               </div>
-
-              <div className="bg-white rounded-3xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
+              <div className="bg-white rounded-[32px] shadow-sm border border-slate-200 flex flex-1 flex-col overflow-hidden">
                 <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                   <div className="relative">
                     <Search
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
                       size={16}
                     />
                     <input
-                      className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100"
+                      className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none"
                       placeholder="Zoek ID..."
                       value={listSearch}
                       onChange={(e) => setListSearch(e.target.value)}
                     />
                   </div>
                 </div>
-
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-                  {loading && (
-                    <div className="p-4 text-center text-slate-400">
-                      <Loader2 className="animate-spin inline mx-auto" />
+                <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
+                  {loading ? (
+                    <div className="p-8 text-center">
+                      <Loader2 className="animate-spin inline text-blue-500" />
                     </div>
+                  ) : (
+                    (dimData || [])
+                      .filter((d) =>
+                        d.id.toLowerCase().includes(listSearch.toLowerCase())
+                      )
+                      .map((d) => (
+                        <div
+                          key={d.id}
+                          onClick={() => setEditingDim(d)}
+                          className={`group p-3.5 rounded-2xl cursor-pointer transition-all flex justify-between items-center ${
+                            editingDim?.id === d.id
+                              ? "bg-slate-900 text-white shadow-xl"
+                              : "hover:bg-slate-50 text-slate-600"
+                          }`}
+                        >
+                          <span className="text-[11px] font-bold font-mono tracking-tighter">
+                            {d.id}
+                          </span>
+                          <ChevronRight
+                            size={14}
+                            className={
+                              editingDim?.id === d.id
+                                ? "text-blue-400"
+                                : "opacity-0 group-hover:opacity-100"
+                            }
+                          />
+                        </div>
+                      ))
                   )}
-
-                  {!loading && filteredData.length === 0 && (
-                    <div className="text-center p-8 text-slate-400 text-xs">
-                      Geen items gevonden in {getCollectionName()}.
-                    </div>
-                  )}
-
-                  {filteredData.map((d) => (
-                    <div
-                      key={d.id}
-                      onClick={() => setEditingDim(d)}
-                      className={`group p-3 rounded-2xl cursor-pointer transition-all flex justify-between items-center ${
-                        editingDim?.id === d.id
-                          ? "bg-slate-900 text-white shadow-md"
-                          : "hover:bg-slate-50 text-slate-600 border border-transparent hover:border-slate-100"
-                      }`}
-                    >
-                      <span className="text-xs font-bold font-mono">
-                        {d.id}
-                      </span>
-                      <ChevronRight
-                        size={14}
-                        className={`opacity-0 group-hover:opacity-100 transition-opacity ${
-                          editingDim?.id === d.id
-                            ? "text-emerald-400"
-                            : "text-slate-400"
-                        }`}
-                      />
-                    </div>
-                  ))}
                 </div>
               </div>
             </div>
-
             <div className="flex-1 h-full overflow-y-auto custom-scrollbar pr-2">
               {editingDim ? (
-                <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-100 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                  <div className="flex justify-between items-start mb-6 pb-6 border-b border-slate-100">
+                <div className="bg-white p-10 rounded-[40px] shadow-2xl border border-slate-100 relative mb-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  <div className="flex justify-between items-start mb-10 pb-8 border-b border-slate-100">
                     <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="px-2 py-1 bg-slate-100 rounded text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                          {activeMode === "bell" ? "Bell" : "Fitting"} •{" "}
-                          {bellSubType.toUpperCase()}
-                        </span>
-                      </div>
-                      <h3 className="text-3xl font-black text-slate-800 tracking-tight">
+                      <span className="px-3 py-1 bg-blue-50 rounded-full text-[9px] font-black text-blue-600 uppercase tracking-widest mb-3 inline-block italic">
+                        {bellSubType.toUpperCase()} Spec Editor
+                      </span>
+                      <h3 className="text-4xl font-black text-slate-900 tracking-tighter italic">
                         {editingDim.id}
                       </h3>
                     </div>
                     <button
-                      onClick={() => deleteItem(editingDim.id)}
-                      className="text-red-400 hover:text-red-600 hover:bg-red-50 p-3 rounded-xl transition-colors"
-                      title="Verwijder item"
-                    >
-                      <Trash2 size={20} />
-                    </button>
-                  </div>
-
-                  {/* FORMULIER VELDEN */}
-                  {renderFields()}
-
-                  {/* Nieuw Veld Toevoegen (Dynamisch) */}
-                  <div className="flex gap-2 mt-8 pt-6 border-t border-slate-100">
-                    <input
-                      id="newDimField"
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-slate-400"
-                      placeholder="Extra veld toevoegen (bijv. X, Y)..."
-                    />
-                    <button
-                      onClick={() => {
-                        const f = document.getElementById("newDimField").value;
-                        if (f) {
-                          setEditingDim({ ...editingDim, [f]: "" });
-                          document.getElementById("newDimField").value = "";
-                        }
-                      }}
-                      className="bg-slate-200 text-slate-600 px-6 rounded-xl text-xs font-black hover:bg-slate-300 transition-colors"
-                    >
-                      + Veld
-                    </button>
-                  </div>
-
-                  <div className="mt-6">
-                    <button
                       onClick={saveItem}
                       disabled={loading}
-                      className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-emerald-700 shadow-xl shadow-emerald-200 transform hover:-translate-y-1 transition-all disabled:opacity-50 disabled:translate-y-0 flex items-center justify-center gap-2"
+                      className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-700 shadow-xl transition-all flex items-center gap-2"
                     >
                       {loading ? (
-                        <Loader2 className="animate-spin" />
+                        <RefreshCw className="animate-spin" size={16} />
                       ) : (
-                        <Edit3 size={18} />
-                      )}
-                      {loading ? "Opslaan..." : "Wijzigingen Opslaan"}
+                        <Save size={16} />
+                      )}{" "}
+                      Opslaan
                     </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-6">
+                    {getSortedFields(
+                      Object.keys(editingDim).filter(
+                        (k) =>
+                          !["id", "type", "pressure", "diameter"].includes(k)
+                      )
+                    ).map((key) => (
+                      <div key={key} className="space-y-1">
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          {DIMENSION_LABELS[key] || key}
+                        </label>
+                        <div className="relative">
+                          <input
+                            className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold focus:bg-white focus:border-blue-500 outline-none transition-all"
+                            value={editingDim[key] || ""}
+                            onChange={(e) =>
+                              setEditingDim({
+                                ...editingDim,
+                                [key]: e.target.value,
+                              })
+                            }
+                          />
+                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-300">
+                            mm
+                          </span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : (
-                <div className="h-full flex flex-col items-center justify-center text-slate-300 border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
-                  <Ruler size={64} className="mb-4 opacity-20" />
-                  <p className="font-bold text-lg text-slate-400">
-                    Selecteer een item
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Klik links in de lijst om te bewerken
+                <div className="h-full flex flex-col items-center justify-center text-slate-300 border-4 border-dashed border-slate-100 rounded-[50px] bg-white/50">
+                  <Box size={80} className="mb-6 opacity-10" />
+                  <p className="font-black text-xl uppercase tracking-widest text-slate-400">
+                    Selecteer item
                   </p>
                 </div>
               )}

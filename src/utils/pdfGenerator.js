@@ -1,122 +1,87 @@
 import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
+import "jspdf-autotable";
 
 /**
- * pdfGenerator.js - Fix voor object mapping en typo.
+ * Genereert een PDF op basis van de rol van de gebruiker.
+ * @param {Object} product - De productdata.
+ * @param {String} role - De rol van de ingelogde gebruiker ('qc', 'admin', 'viewer', etc).
  */
-export const generateProductPDF = (product, mode = "standard") => {
-  if (!product || typeof product !== "object") return;
+export const generateProductPDF = (product, role = "viewer") => {
   const doc = new jsPDF();
-  const timestamp = new Date().toLocaleString("nl-NL");
-  const headerColor = [15, 23, 42];
-  const isBore =
-    mode === "bore" ||
-    product.isBoreSpec === true ||
-    String(product.type || "")
-      .toLowerCase()
-      .includes("boor");
+  const isQC = role === "qc" || role === "admin";
 
-  const headerHeight = 32;
-  doc.setFillColor(headerColor[0], headerColor[1], headerColor[2]);
-  doc.rect(0, 0, 210, headerHeight, "F");
+  // 1. Header instellen
+  doc.setFillColor(isQC ? 51 : 15, isQC ? 65 : 23, isQC ? 85 : 42); // QC krijgt een donkerdere slate-kleur
+  doc.rect(0, 0, 210, 40, "F");
+
   doc.setTextColor(255, 255, 255);
+  doc.setFontSize(22);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
-  doc.text("FUTURE PIPE INDUSTRIES", 15, 12);
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "normal");
-  doc.text(
-    isBore
-      ? "TECHNICAL DRILLING PATTERN SPECIFICATIONS"
-      : "TECHNICAL PRODUCT DATASHEET",
-    15,
-    17
-  );
-  doc.text(`Datum: ${timestamp}`, 160, 12);
+  doc.text(isQC ? "QC INSPECTIE RAPPORT" : "TECHNISCHE FICHE", 20, 20);
 
-  const mainTitle = String(
-    product.name || product.id || "Technisch Document"
-  ).toUpperCase();
-  doc.setFontSize(14);
-  doc.setFont("helvetica", "bold");
-  doc.text(mainTitle, 15, 26);
+  doc.setFontSize(10);
+  doc.text(`PRODUCT: ${product.name || "Fitting"}`, 20, 30);
+  doc.text(`DATUM: ${new Date().toLocaleDateString()}`, 150, 30);
 
-  doc.setTextColor(0, 0, 0);
-  let currentY = headerHeight + 10;
-  let head = [],
-    rows = [];
+  // 2. Basis Informatie tabel
+  const basicInfo = [
+    ["Diameter (ID)", `ID ${product.diameter} mm`],
+    ["Drukklasse (PN)", `PN ${product.pressure}`],
+    ["Type", product.type || "-"],
+    ["Verbinding", product.connection || "-"],
+  ];
 
-  if (isBore) {
-    head = [
-      ["ID (mm)", "DU (Buiten)", "Dbc (Steek)", "d (Boorgat)", "N (Gaten)"],
-    ];
-    const source = product.specs || product;
-    const systemKeys = [
-      "id",
-      "name",
-      "type",
-      "description",
-      "updatedat",
-      "isborespec",
-      "specs",
-      "diameter",
-      "pressure",
-      "label",
-      "productlabel",
-    ];
-
-    Object.entries(source).forEach(([key, data]) => {
-      if (
-        !systemKeys.includes(key.toLowerCase()) &&
-        typeof data === "object" &&
-        data !== null
-      ) {
-        rows.push([
-          key,
-          data.du || "-",
-          data.dbc || "-",
-          data.d || "-",
-          data.n || "-",
-        ]);
-      }
-    });
-    rows.sort((a, b) => Number(a[0]) - Number(b[0]));
-  } else {
-    head = [["PARAMETER", "WAARDE", "TOLERANTIE"]];
-    rows.push(["DIAMETER (ID)", `${product.diameter} mm`, "-"]);
-    rows.push(["DRUKKLASSE (PN)", `PN ${product.pressure}`, "-"]);
-    if (product.angle) rows.push(["HOEK", `${product.angle}°`, "± 1.0°"]);
-
-    Object.entries(product.specs || {}).forEach(([k, s]) => {
-      // Check of de spec een object is {value, tol} of een string/getal
-      const isObj = s !== null && typeof s === "object";
-      const v = isObj ? s.value : s;
-      const t = isObj && s.tol ? `± ${s.tol}` : "-"; // Fix: s.tol ipv spec.tol
-      rows.push([k.toUpperCase(), v, t]);
-    });
-  }
-
-  autoTable(doc, {
-    startY: currentY,
-    head: head,
-    body: rows,
-    theme: "grid",
-    headStyles: {
-      fillColor: headerColor,
-      textColor: [255, 255, 255],
-      fontSize: 7.5,
-      fontStyle: "bold",
-    },
-    styles: {
-      fontSize: 7,
-      cellPadding: 1.5,
-      textColor: [0, 0, 0],
-      valign: "middle",
-    },
-    columnStyles: { 0: { fontStyle: "bold" } },
-    alternateRowStyles: { fillColor: [248, 250, 252] },
-    margin: { left: 15, right: 15 },
+  doc.autoTable({
+    startY: 50,
+    head: [["Kenmerk", "Waarde"]],
+    body: basicInfo,
+    theme: "striped",
+    headStyles: { fillStyle: isQC ? [71, 85, 105] : [16, 185, 129] },
   });
 
-  doc.save(`FPI_${mainTitle.replace(/\s+/g, "_")}.pdf`);
+  // 3. QC SPECIFIEKE DATA (Alleen voor QC of Admin)
+  if (isQC) {
+    doc.setTextColor(51, 65, 85);
+    doc.setFontSize(14);
+    doc.text("Kwaliteit & Toleranties", 20, doc.lastAutoTable.finalY + 15);
+
+    const qcData = [
+      [
+        "Minimale Wanddikte",
+        `${(product.wall_thickness * 0.95).toFixed(2)} mm`,
+      ],
+      ["Maximale Wanddikte", `${(product.wall_thickness * 1.1).toFixed(2)} mm`],
+      ["Boring Target", `${product.bore_target || "-"} mm`],
+      ["Tolerantie Klasse", "ISO 2768-m"],
+      ["Oppervlakte Check", "Visueel - Geen laminatie"],
+    ];
+
+    doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 20,
+      head: [["Inspectie Punt", "Specificatie"]],
+      body: qcData,
+      theme: "grid",
+      headStyles: { fillStyle: [249, 115, 22] }, // Oranje voor QC actie-punten
+    });
+
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(
+      "Dit document is uitsluitend voor intern gebruik door de afdeling Quality Control.",
+      20,
+      285
+    );
+  } else {
+    // Standaard Operator tekst
+    doc.setFontSize(10);
+    doc.setTextColor(100, 100, 100);
+    doc.text(
+      "Raadpleeg de mal-opbouw instructie in de app voor productie.",
+      20,
+      doc.lastAutoTable.finalY + 20
+    );
+  }
+
+  // PDF downloaden
+  doc.save(`${isQC ? "QC_" : "TECH_"}${product.id}.pdf`);
 };
