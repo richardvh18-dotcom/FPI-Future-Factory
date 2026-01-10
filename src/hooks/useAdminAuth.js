@@ -4,73 +4,82 @@ import { doc, getDoc } from "firebase/firestore";
 import { auth, db, appId } from "../config/firebase";
 
 /**
- * useAdminAuth: Beheert de rollen binnen de app.
- * Rollen: 'admin', 'engineer', 'teamleader', 'qc', 'viewer'.
+ * useAdminAuth: Beheert de authenticatie en autorisatie van de gebruiker.
+ * De standaardrol is nu 'operator' in plaats van 'viewer'.
  */
 export const useAdminAuth = () => {
   const [state, setState] = useState({
     user: null,
     isAdmin: false,
-    role: "viewer",
+    role: "operator", // Gewijzigd van viewer naar operator
     loading: true,
   });
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
       if (authUser && !authUser.isAnonymous) {
-        const masterAdminUIDs = ["pFlmcq8IgRNOBxwwV8tS5f8P5BI2"];
-        let detectedRole = "viewer";
+        let detectedRole = "operator"; // Gewijzigd
+        const emailId = authUser.email?.toLowerCase();
+        const uid = authUser.uid;
 
-        if (masterAdminUIDs.includes(authUser.uid)) {
+        // 1. MASTER WHITELIST
+        const isMaster =
+          emailId === "richardvh18@gmail.com" ||
+          uid === "pFlmcq8IgRNOBxwwV8tS5f8P5BI2";
+
+        if (isMaster) {
           detectedRole = "admin";
         } else {
+          // 2. DATABASE CHECK
           try {
-            const roleDoc = await getDoc(
-              doc(
+            const emailDocRef = doc(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "user_roles",
+              emailId
+            );
+            const emailSnap = await getDoc(emailDocRef);
+
+            if (emailSnap.exists()) {
+              detectedRole = emailSnap.data().role;
+            } else {
+              const uidDocRef = doc(
                 db,
                 "artifacts",
                 appId,
                 "public",
                 "data",
                 "user_roles",
-                authUser.uid
-              )
-            );
-            if (roleDoc.exists()) {
-              detectedRole = roleDoc.data().role || "viewer";
-            } else {
-              const emailDoc = await getDoc(
-                doc(
-                  db,
-                  "artifacts",
-                  appId,
-                  "public",
-                  "data",
-                  "user_roles",
-                  authUser.email?.toLowerCase()
-                )
+                uid
               );
-              if (emailDoc.exists()) {
-                detectedRole = emailDoc.data().role || "viewer";
+              const uidSnap = await getDoc(uidDocRef);
+              if (uidSnap.exists()) {
+                detectedRole = uidSnap.data().role;
               }
             }
           } catch (e) {
-            console.error("Fout bij ophalen rol:", e);
+            console.error("Autorisatie check mislukt:", e);
           }
         }
 
+        // De bevoegdheden voor isAdmin blijven gelijk (geen operator)
+        const roleLower = (detectedRole || "operator").toLowerCase();
+        const isAdmin = ["admin", "engineer", "teamleader"].includes(roleLower);
+
         setState({
           user: authUser,
-          role: detectedRole,
-          // QC heeft dezelfde rechten als users (geen Admin Hub toegang)
-          isAdmin: ["admin", "engineer", "teamleader"].includes(detectedRole),
+          isAdmin,
+          role: roleLower,
           loading: false,
         });
       } else {
         setState({
-          user: authUser || null,
+          user: null,
           isAdmin: false,
-          role: "viewer",
+          role: "operator",
           loading: false,
         });
       }

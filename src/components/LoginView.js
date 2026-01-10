@@ -1,229 +1,321 @@
-import React, { useState } from "react";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db, appId } from "../config/firebase";
-// TOEGEVOEGD: Shield icoon in de import
+import React, { useState, useEffect } from "react";
 import {
   Lock,
   Mail,
-  User,
-  MapPin,
-  Send,
+  Loader2,
+  AlertCircle,
+  ArrowRight,
+  ShieldCheck,
+  Key,
+  CheckCircle2,
   ChevronLeft,
-  Shield,
 } from "lucide-react";
+import { auth } from "../config/firebase";
+import { sendPasswordResetEmail, updatePassword } from "firebase/auth";
 
-const LoginView = ({ onLogin }) => {
-  const [isRequesting, setIsRequesting] = useState(false);
+/**
+ * LoginView: Behandelt Login, Wachtwoord Vergeten en Verplichte Wachtwoordwijziging.
+ * Bevat een 'shake' animatie bij foutieve invoer.
+ */
+const LoginView = ({
+  onLogin,
+  error,
+  mustChangePassword,
+  onPasswordChanged,
+}) => {
+  const [view, setView] = useState("login"); // login | forgot | change
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [localError, setLocalError] = useState(null);
+  const [shake, setShake] = useState(false);
+  const [successMsg, setSuccessMsg] = useState(null);
 
-  // Aanvraag formulier state
-  const [requestData, setRequestData] = useState({
-    name: "",
-    email: "",
-    country: "Nederland",
-  });
-  const [message, setMessage] = useState("");
+  // Trigger shake animatie bij fouten van buitenaf (props)
+  useEffect(() => {
+    if (error) {
+      setShake(true);
+      const timer = setTimeout(() => setShake(false), 500);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
 
-  const handleLoginSubmit = (e) => {
+  // Als de App aangeeft dat het wachtwoord gewijzigd MOET worden
+  useEffect(() => {
+    if (mustChangePassword) setView("change");
+  }, [mustChangePassword]);
+
+  const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    onLogin(email, password);
-  };
-
-  const handleRequestAccess = async (e) => {
-    e.preventDefault();
+    setLoading(true);
     try {
-      await addDoc(collection(db, "artifacts", appId, "account_requests"), {
-        ...requestData,
-        timestamp: serverTimestamp(),
-        status: "pending",
-      });
-      setMessage("Aanvraag verzonden! We nemen contact met je op.");
-
-      // Keer na 3 seconden automatisch terug naar het inlogscherm
-      setTimeout(() => {
-        setIsRequesting(false);
-        setMessage("");
-        setRequestData({ name: "", email: "", country: "Nederland" });
-      }, 3000);
-    } catch (error) {
-      alert("Fout bij aanvraag: " + error.message);
+      await onLogin(email, password);
+    } catch (err) {
+      setShake(true);
+      setTimeout(() => setShake(false), 500);
+    } finally {
+      setLoading(false);
     }
   };
 
-  // --- WEERGAVE: AANVRAAG FORMULIER ---
-  if (isRequesting) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-sans">
-        <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden p-8 animate-in fade-in zoom-in duration-300">
-          <button
-            onClick={() => setIsRequesting(false)}
-            className="flex items-center gap-2 text-slate-400 hover:text-blue-600 mb-6 transition-colors group"
-          >
-            <ChevronLeft
-              size={18}
-              className="group-hover:-translate-x-1 transition-transform"
-            />
-            <span className="text-xs font-bold uppercase tracking-widest">
-              Terug naar login
-            </span>
-          </button>
+  const handleResetRequest = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setLocalError(null);
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setSuccessMsg("Er is een herstellink verzonden naar je e-mailadres.");
+      setTimeout(() => setView("login"), 5000);
+    } catch (err) {
+      setLocalError("Kon geen herstelmail sturen. Controleer het e-mailadres.");
+      setShake(true);
+      setTimeout(() => setShake(false), 500);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-          <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tighter">
-            Toegang Aanvragen
-          </h2>
-          <p className="text-slate-500 text-sm mb-8 font-medium">
-            Laat je gegevens achter. Een beheerder zal je aanvraag beoordelen.
-          </p>
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setLocalError("Wachtwoorden komen niet overeen.");
+      setShake(true);
+      setTimeout(() => setShake(false), 500);
+      return;
+    }
+    if (newPassword.length < 6) {
+      setLocalError("Wachtwoord moet minimaal 6 tekens zijn.");
+      return;
+    }
 
-          {message ? (
-            <div className="bg-emerald-50 text-emerald-700 p-6 rounded-2xl text-center font-bold animate-in slide-in-from-bottom-4">
-              <div className="bg-emerald-500 text-white w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-3">
-                <Send size={20} />
-              </div>
-              {message}
+    setLoading(true);
+    try {
+      await updatePassword(auth.currentUser, newPassword);
+      if (onPasswordChanged) await onPasswordChanged();
+      setSuccessMsg("Wachtwoord succesvol bijgewerkt!");
+    } catch (err) {
+      setLocalError(
+        "Sessie verlopen. Log opnieuw in met je tijdelijke wachtwoord."
+      );
+      setTimeout(() => window.location.reload(), 3000);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-sans relative overflow-hidden">
+      {/* Achtergrond decoratie */}
+      <div className="absolute top-0 left-0 w-full h-full opacity-20 pointer-events-none">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-emerald-500 rounded-full blur-[120px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-600 rounded-full blur-[120px]" />
+      </div>
+
+      <div
+        className={`w-full max-w-md bg-white rounded-[40px] shadow-2xl overflow-hidden relative z-10 transition-transform duration-500 ${
+          shake ? "animate-shake" : ""
+        }`}
+      >
+        {/* Progressie balk voor Password Change */}
+        {view === "change" && <div className="h-2 bg-blue-500 animate-pulse" />}
+
+        <div className="p-10">
+          <div className="flex flex-col items-center mb-10">
+            <div className="bg-slate-900 p-4 rounded-3xl mb-4 shadow-xl">
+              <ShieldCheck className="text-emerald-400" size={32} />
             </div>
-          ) : (
-            <form onSubmit={handleRequestAccess} className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">
-                  Volledige Naam
-                </label>
-                <div className="relative">
-                  <User
-                    className="absolute left-3 top-3 text-slate-300"
-                    size={18}
-                  />
-                  <input
-                    required
-                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                    placeholder="bijv. Richard V."
-                    value={requestData.name}
-                    onChange={(e) =>
-                      setRequestData({ ...requestData, name: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
+            <h1 className="text-2xl font-black text-slate-900 uppercase italic tracking-tight">
+              FPI <span className="text-emerald-500">Technical Hub</span>
+            </h1>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">
+              {view === "login"
+                ? "Beveiligde Toegang"
+                : view === "forgot"
+                ? "Wachtwoord Herstellen"
+                : "Nieuw Wachtwoord Instellen"}
+            </p>
+          </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">
-                  E-mail Adres
-                </label>
-                <div className="relative">
-                  <Mail
-                    className="absolute left-3 top-3 text-slate-300"
-                    size={18}
-                  />
-                  <input
-                    required
-                    type="email"
-                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                    placeholder="naam@bedrijf.nl"
-                    value={requestData.email}
-                    onChange={(e) =>
-                      setRequestData({ ...requestData, email: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
+          {(error || localError) && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl flex items-center gap-3 text-red-600 text-xs font-bold animate-in fade-in zoom-in duration-300">
+              <AlertCircle size={18} />
+              {localError || error}
+            </div>
+          )}
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">
-                  Land / Regio
-                </label>
-                <div className="relative">
-                  <MapPin
-                    className="absolute left-3 top-3 text-slate-300"
-                    size={18}
-                  />
-                  <input
-                    required
-                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                    placeholder="bijv. Nederland"
-                    value={requestData.country}
-                    onChange={(e) =>
-                      setRequestData({
-                        ...requestData,
-                        country: e.target.value,
-                      })
-                    }
-                  />
-                </div>
-              </div>
+          {successMsg && (
+            <div className="mb-6 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center gap-3 text-emerald-600 text-xs font-bold animate-in fade-in zoom-in duration-300">
+              <CheckCircle2 size={18} />
+              {successMsg}
+            </div>
+          )}
 
+          {/* VIEW: LOGIN */}
+          {view === "login" && (
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <div className="relative">
+                <Mail
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
+                  size={18}
+                />
+                <input
+                  type="email"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-12 pr-4 py-4 text-sm font-bold outline-none focus:border-emerald-500 transition-all"
+                  placeholder="E-mailadres"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="relative">
+                <Lock
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
+                  size={18}
+                />
+                <input
+                  type="password"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-12 pr-4 py-4 text-sm font-bold outline-none focus:border-emerald-500 transition-all"
+                  placeholder="Wachtwoord"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setView("forgot")}
+                  className="text-[10px] font-black uppercase text-slate-400 hover:text-blue-500 transition-colors"
+                >
+                  Wachtwoord vergeten?
+                </button>
+              </div>
               <button
                 type="submit"
-                className="w-full bg-blue-600 text-white py-4 rounded-xl font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 mt-4"
+                disabled={loading}
+                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shadow-xl active:scale-95 disabled:opacity-50"
               >
-                <Send size={18} /> Verzend Aanvraag
+                {loading ? (
+                  <Loader2 className="animate-spin" size={18} />
+                ) : (
+                  <>
+                    Inloggen <ArrowRight size={18} />
+                  </>
+                )}
+              </button>
+            </form>
+          )}
+
+          {/* VIEW: FORGOT PASSWORD */}
+          {view === "forgot" && (
+            <form onSubmit={handleResetRequest} className="space-y-6">
+              <p className="text-xs text-slate-500 font-medium leading-relaxed text-center mb-4">
+                Vul je e-mailadres in. We sturen je een link om een nieuw
+                wachtwoord aan te maken.
+              </p>
+              <div className="relative">
+                <Mail
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
+                  size={18}
+                />
+                <input
+                  type="email"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-12 pr-4 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                  placeholder="Je werk e-mail"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-3">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-700 shadow-lg disabled:opacity-50"
+                >
+                  {loading ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    "Herstellink Versturen"
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("login")}
+                  className="w-full text-slate-400 font-black text-[10px] uppercase tracking-widest py-2 flex items-center justify-center gap-1"
+                >
+                  <ChevronLeft size={14} /> Terug naar Login
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* VIEW: CHANGE PASSWORD (FIRST TIME) */}
+          {view === "change" && (
+            <form onSubmit={handleChangePassword} className="space-y-4">
+              <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 mb-6">
+                <p className="text-blue-700 text-xs font-bold leading-relaxed flex items-start gap-2">
+                  <Key size={16} className="shrink-0" />
+                  Je logt voor het eerst in met een tijdelijk wachtwoord. Stel
+                  nu een eigen veilig wachtwoord in.
+                </p>
+              </div>
+              <div className="relative">
+                <Lock
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
+                  size={18}
+                />
+                <input
+                  type="password"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-12 pr-4 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                  placeholder="Nieuw Wachtwoord"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="relative">
+                <ShieldCheck
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
+                  size={18}
+                />
+                <input
+                  type="password"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-12 pr-4 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                  placeholder="Bevestig Wachtwoord"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl"
+              >
+                {loading ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  "Wachtwoord Opslaan"
+                )}
               </button>
             </form>
           )}
         </div>
       </div>
-    );
-  }
 
-  // --- WEERGAVE: STANDAARD LOGIN ---
-  return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-sans">
-      <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden p-8">
-        <div className="text-center mb-10">
-          <div className="bg-blue-600 w-16 h-16 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-lg rotate-3">
-            <Shield className="text-white" size={32} />
-          </div>
-          <h1 className="text-3xl font-black text-slate-800 tracking-tighter uppercase italic">
-            GRE Fittings
-          </h1>
-          <p className="text-slate-400 text-[10px] font-black tracking-[0.2em] uppercase">
-            Product Database v1.0
-          </p>
-        </div>
-
-        <form onSubmit={handleLoginSubmit} className="space-y-4">
-          <div className="relative">
-            <Mail className="absolute left-3 top-3 text-slate-300" size={18} />
-            <input
-              required
-              type="email"
-              className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="relative">
-            <Lock className="absolute left-3 top-3 text-slate-300" size={18} />
-            <input
-              required
-              type="password"
-              className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-              placeholder="Wachtwoord"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          <button
-            type="submit"
-            className="w-full bg-slate-800 text-white py-4 rounded-xl font-black uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-slate-200/50"
-          >
-            Inloggen
-          </button>
-        </form>
-
-        <div className="mt-8 pt-6 border-t border-slate-50 text-center">
-          <p className="text-xs text-slate-400 mb-4 font-medium">
-            Nog geen toegang tot de database?
-          </p>
-          <button
-            onClick={() => setIsRequesting(true)}
-            className="text-blue-600 text-xs font-black uppercase tracking-widest hover:text-blue-800 transition-colors border-b-2 border-transparent hover:border-blue-800 pb-1"
-          >
-            Toegang aanvragen
-          </button>
-        </div>
-      </div>
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          25% { transform: translateX(-10px); }
+          75% { transform: translateX(10px); }
+        }
+        .animate-shake {
+          animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+      `}</style>
     </div>
   );
 };

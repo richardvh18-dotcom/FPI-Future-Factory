@@ -15,6 +15,7 @@ import { useAdminAuth } from "../../hooks/useAdminAuth";
 
 /**
  * AdminDashboard: Filtert menu-items op basis van gebruikersrol.
+ * GEFIXT: Layout gecentreerd en responsive gemaakt.
  */
 const AdminDashboard = ({ navigate, stats = {} }) => {
   const { role } = useAdminAuth();
@@ -86,50 +87,53 @@ const AdminDashboard = ({ navigate, stats = {} }) => {
     },
   ];
 
-  // Filter items op basis van de huidige rol
   const menuItems = allItems.filter((item) => item.roles.includes(role));
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500 w-full">
-      <div className="flex flex-col md:items-start border-b border-slate-200 pb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <h1 className="text-4xl font-black text-slate-900 tracking-tight leading-none uppercase italic">
-            Admin <span className="text-blue-600">Hub</span>
-          </h1>
-          <span className="bg-slate-900 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
-            <ShieldAlert size={12} className="text-emerald-400" />
-            Sessie: {role}
-          </span>
-        </div>
-        <p className="text-slate-500 font-medium">
-          Toegang verleend op basis van uw functieprofiel.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {menuItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => navigate(item.id)}
-            className={`group flex flex-col p-6 rounded-[32px] border-2 text-left transition-all duration-300 transform hover:-translate-y-2 bg-white ${item.color} border-transparent shadow-sm hover:shadow-xl`}
-          >
-            <div className="flex items-start justify-between mb-6">
-              <div className="p-4 bg-white rounded-2xl shadow-sm group-hover:scale-110 transition-transform">
-                {item.icon}
-              </div>
+    <div className="flex flex-col items-center w-full py-10 px-6 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar">
+      <div className="w-full max-w-7xl space-y-10">
+        {/* Header - Gecentreerd */}
+        <div className="flex flex-col items-center text-center border-b border-slate-200 pb-10">
+          <div className="flex items-center gap-3 mb-4">
+            <h1 className="text-5xl font-black text-slate-900 tracking-tight uppercase italic">
+              Admin <span className="text-blue-600">Hub</span>
+            </h1>
+            <div className="bg-slate-900 text-white px-4 py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg">
+              <ShieldAlert size={14} className="text-emerald-400" />
+              Ingelogd als: {role}
             </div>
-            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
-              {item.title}
-              <ArrowRight
-                size={16}
-                className="opacity-0 -translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all"
-              />
-            </h3>
-            <p className="text-sm text-slate-500 font-medium mt-2 leading-relaxed">
-              {item.desc}
-            </p>
-          </button>
-        ))}
+          </div>
+          <p className="text-slate-500 font-bold text-lg max-w-2xl uppercase tracking-tighter">
+            Centrale beheeromgeving voor engineering en productie-instellingen.
+          </p>
+        </div>
+
+        {/* Grid - Altijd netjes verdeeld */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {menuItems.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => navigate(item.id)}
+              className={`group flex flex-col p-8 rounded-[40px] border-2 text-left transition-all duration-500 transform hover:-translate-y-2 bg-white ${item.color} border-transparent shadow-sm hover:shadow-2xl hover:border-white`}
+            >
+              <div className="flex items-start justify-between mb-8">
+                <div className="p-5 bg-white rounded-3xl shadow-md group-hover:scale-110 group-hover:rotate-3 transition-all duration-500">
+                  {item.icon}
+                </div>
+                <ArrowRight
+                  size={20}
+                  className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity"
+                />
+              </div>
+              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
+                {item.title}
+              </h3>
+              <p className="text-sm text-slate-500 font-medium mt-3 leading-relaxed opacity-80">
+                {item.desc}
+              </p>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

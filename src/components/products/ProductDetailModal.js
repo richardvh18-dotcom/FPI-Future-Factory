@@ -1,294 +1,504 @@
-import React, { useMemo, useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   X,
-  FileText,
-  Ruler,
-  Package,
-  ShieldCheck,
-  Warehouse,
+  Save,
+  Plus,
+  Edit3,
+  Loader2,
   Info,
-  ImageIcon,
-  Box,
-  Layout,
-  Download,
+  Image as ImageIcon,
+  Upload,
+  Search,
   Database,
-  Fingerprint,
+  Zap,
+  CheckCircle2,
+  Ruler,
+  AlertCircle,
+  Tag,
 } from "lucide-react";
+import {
+  doc,
+  setDoc,
+  updateDoc,
+  addDoc,
+  collection,
+  serverTimestamp,
+  getDoc,
+  getDocs,
+} from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db, appId, storage } from "../../config/firebase";
 
 /**
- * ProductDetailModal.js - v9.0
- * XXL Foto weergave en live tolerantie synchronisatie.
+ * ProductForm: Slaat alleen de CONFIGURATIE op.
+ * De technische maten (B1, L, etc.) worden NIET opgeslagen in het productdocument,
+ * zodat ze dynamisch blijven bij wijzigingen in de Matrix.
  */
-const ProductDetailModal = ({
-  product,
-  moffen = [],
-  toleranceSettings = {},
+const ProductForm = ({
+  isOpen,
   onClose,
-  onExportPDF,
+  editingProduct,
+  user,
+  onSaveSuccess,
 }) => {
-  const [activeDetailTab, setActiveDetailTab] = useState("info");
+  const [loading, setLoading] = useState(false);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [fetchingSpecs, setFetchingSpecs] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [toast, setToast] = useState({
+    visible: false,
+    message: "",
+    type: "info",
+  });
 
-  if (!product) return null;
+  const [settings, setSettings] = useState({
+    connections: [],
+    product_names: [],
+    labels: [],
+    extraCodes: [],
+    pns: [],
+    diameters: [],
+  });
+  const [range, setRange] = useState({});
+  const [existingImages, setExistingImages] = useState([]);
+  const [showGallery, setShowGallery] = useState(false);
 
-  const BELL_KEYS = [
-    "B1",
-    "B2",
-    "BA",
-    "r1",
-    "alpha",
-    "A1",
-    "A",
-    "F",
-    "C",
-    "O",
-    "R",
-  ];
-
-  const getTolerance = (key) => {
-    if (!toleranceSettings) return null;
-    let cat = "SocketEnd";
-    if (product.category === "Elbow") cat = "Elbow";
-    if (
-      product.category?.includes("Tee") ||
-      product.category?.includes("Reducer")
-    )
-      cat = "TeeReducer";
-    if (product.category === "Coupler") cat = "Coupler";
-    const type = product.type || "TB";
-    const pn = String(product.pressure);
-    const dia = String(product.diameter);
-    return toleranceSettings[cat]?.[type]?.[pn]?.[dia]?.[key] || null;
+  const initialState = {
+    name: "",
+    type: "-",
+    angle: "-",
+    radius: "-",
+    connection: "-",
+    pressure: "-",
+    diameter: "-",
+    bore: "-",
+    label: "-",
+    code: "-",
+    extraCode: "-",
+    imageUrl: "",
+    // Deze velden gebruiken we alleen voor de preview in het formulier
+    B1: "",
+    B2: "",
+    BA: "",
+    A1: "",
+    r1: "",
+    alpha: "",
+    L: "",
+    Z: "",
+    BD: "",
+    W: "",
+    TWcb: "",
+    TWtb: "",
   };
 
-  const groupedSpecs = useMemo(() => {
-    const rawSpecs = product.specs || {};
-    const fitting = [],
-      bell = [];
-    Object.entries(rawSpecs).forEach(([k, v]) => {
-      const val = v !== null && typeof v === "object" ? v.value : v;
-      const tol =
-        getTolerance(k) || (v !== null && typeof v === "object" ? v.tol : null);
-      const obj = { label: k, value: val, tol };
-      if (BELL_KEYS.includes(k)) bell.push(obj);
-      else fitting.push(obj);
-    });
-    return { fitting, bell };
-  }, [product, toleranceSettings]);
+  const [formData, setFormData] = useState(initialState);
 
-  const SpecCell = ({ spec }) => (
-    <div className="bg-slate-50 border border-slate-100 rounded-lg p-2 flex flex-col justify-center hover:bg-white transition-all shadow-sm h-14">
-      <div className="flex justify-between items-start">
-        <span className="text-[8px] font-black text-slate-400 uppercase">
-          {spec.label}
-        </span>
-        {spec.tol && (
-          <span className="text-[7px] font-bold text-emerald-600">
-            ±{spec.tol}
-          </span>
-        )}
-      </div>
-      <span className="text-xs font-black text-slate-900 italic">
-        {spec.value || "—"}{" "}
-        <span className="text-[7px] not-italic text-slate-400 ml-0.5">mm</span>
-      </span>
-    </div>
-  );
+  const showNotification = (message, type = "info") => {
+    setToast({ visible: true, message, type });
+    setTimeout(() => setToast((prev) => ({ ...prev, visible: false })), 4000);
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const fetchMatrixData = async () => {
+      setDataLoading(true);
+      try {
+        const configSnap = await getDoc(
+          doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "settings",
+            "general_config"
+          )
+        );
+        if (configSnap.exists()) setSettings(configSnap.data());
+        const rangeSnap = await getDoc(
+          doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "settings",
+            "product_range"
+          )
+        );
+        if (rangeSnap.exists()) setRange(rangeSnap.data());
+        const imagesSnap = await getDocs(
+          collection(db, "artifacts", appId, "public", "data", "product_images")
+        );
+        setExistingImages(
+          imagesSnap.docs.map((doc) => ({
+            url: doc.data().url,
+            name: doc.data().name,
+          }))
+        );
+      } catch (e) {
+        showNotification("Fout bij laden matrix.", "error");
+      } finally {
+        setDataLoading(false);
+      }
+    };
+    fetchMatrixData();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (editingProduct && isOpen)
+      setFormData({ ...initialState, ...editingProduct });
+    else if (isOpen) setFormData(initialState);
+  }, [editingProduct, isOpen]);
+
+  // Dynamische Naamgeving
+  useEffect(() => {
+    if (editingProduct) return;
+    let parts = [];
+    if (formData.type !== "-") parts.push(formData.type);
+    if (formData.type === "Elbow" && formData.angle !== "-")
+      parts.push(formData.angle);
+    if (formData.connection !== "-") parts.push(formData.connection);
+    if (formData.diameter !== "-") parts.push(`ID${formData.diameter}`);
+    if (formData.pressure !== "-") parts.push(`PN${formData.pressure}`);
+    setFormData((prev) => ({ ...prev, name: parts.join(" ") }));
+  }, [
+    formData.type,
+    formData.angle,
+    formData.connection,
+    formData.diameter,
+    formData.pressure,
+  ]);
+
+  // Haal maatvoering op voor PREVIEW
+  const fetchTechnicalSpecs = async () => {
+    const connKey = formData.connection?.split("/")[0];
+    if (!connKey || formData.pressure === "-" || formData.diameter === "-") {
+      showNotification("Kies Mof, PN en ID.", "warning");
+      return;
+    }
+    setFetchingSpecs(true);
+    try {
+      const pnStr = `PN${formData.pressure}`;
+      const idStr = `ID${formData.diameter}`;
+      const codeSuffix =
+        formData.extraCode && formData.extraCode !== "-"
+          ? `_${formData.extraCode.toUpperCase()}`
+          : "";
+      const bellId = `${connKey.toUpperCase()}_${pnStr}_${idStr}${codeSuffix}`;
+      const fittingId = `${formData.type.toUpperCase()}_${connKey.toUpperCase()}_${pnStr}_${idStr}${codeSuffix}`;
+
+      let specs = {};
+      const bellCol =
+        connKey.toLowerCase() === "cb" ? "cb_dimensions" : "tb_dimensions";
+      const bSnap = await getDoc(
+        doc(db, "artifacts", appId, "public", "data", bellCol, bellId)
+      );
+      if (bSnap.exists()) specs = { ...specs, ...bSnap.data() };
+
+      const fSnap = await getDoc(
+        doc(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          "fitting_specs",
+          fittingId
+        )
+      );
+      if (fSnap.exists()) specs = { ...specs, ...fSnap.data() };
+
+      setFormData((prev) => ({ ...prev, ...specs }));
+      showNotification("Maten geladen (Preview).", "success");
+    } catch (e) {
+      showNotification("Fetch mislukt.", "error");
+    } finally {
+      setFetchingSpecs(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (formData.label === "-")
+      return showNotification("Kies een label.", "error");
+    setLoading(true);
+    try {
+      // --- CRUCIAAL: Verwijder technische maten voor opslag ---
+      const {
+        B1,
+        B2,
+        BA,
+        A1,
+        r1,
+        alpha,
+        L,
+        Z,
+        BD,
+        W,
+        TWcb,
+        TWtb,
+        ...dataToPersist
+      } = formData;
+
+      const path = ["artifacts", appId, "public", "data", "products"];
+      if (editingProduct) {
+        await updateDoc(doc(db, ...path, editingProduct.id), {
+          ...dataToPersist,
+          updatedAt: serverTimestamp(),
+          updatedBy: user?.email,
+        });
+      } else {
+        const extraIdPart =
+          formData.extraCode && formData.extraCode !== "-"
+            ? `_${formData.extraCode.toUpperCase()}`
+            : "";
+        const newId = `${formData.type.toUpperCase()}_${
+          formData.diameter
+        }${extraIdPart}_${Date.now()}`;
+        await setDoc(doc(db, ...path, newId), {
+          ...dataToPersist,
+          id: newId,
+          status: "pending_approval",
+          createdAt: serverTimestamp(),
+          createdBy: user?.email,
+        });
+      }
+      onSaveSuccess && onSaveSuccess();
+      onClose();
+    } catch (e) {
+      showNotification("Fout: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[250] flex items-center justify-center p-4 animate-in fade-in duration-300 text-left">
-      <div className="bg-white w-full max-w-6xl rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden flex flex-col h-[92vh] max-h-[950px]">
-        <div className="bg-slate-900 px-8 py-4 text-white shrink-0 border-b border-white/5 relative">
+    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300">
+      <div className="bg-white w-full max-w-6xl rounded-[40px] shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[95vh] relative">
+        {/* TOAST */}
+        {toast.visible && (
+          <div className="absolute top-4 left-0 right-0 z-[120] flex justify-center px-4 pointer-events-none animate-in slide-in-from-top-10 duration-300">
+            <div
+              className={`flex items-center gap-3 px-5 py-3 rounded-2xl shadow-2xl border pointer-events-auto ${
+                toast.type === "success"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-blue-600 text-white"
+              }`}
+            >
+              <CheckCircle2 size={18} />
+              <p className="text-[11px] font-black uppercase tracking-wider">
+                {toast.message}
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-slate-900 p-8 text-white flex justify-between items-center shrink-0">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-emerald-500 rounded-2xl text-slate-900">
+              <Plus size={24} />
+            </div>
+            <div>
+              <h3 className="text-xl font-black uppercase italic">
+                {editingProduct ? "Bewerken" : "Nieuw Product"}
+              </h3>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                Configuratie-gebaseerde Opslag
+              </p>
+            </div>
+          </div>
           <button
             onClick={onClose}
-            className="absolute top-4 right-8 p-2 hover:bg-white/10 rounded-full transition-colors"
+            className="p-2 hover:bg-white/10 rounded-xl transition-all"
           >
             <X size={24} />
           </button>
-          <div className="space-y-2">
-            <div className="flex items-baseline gap-3">
-              <h2 className="text-3xl font-black italic uppercase tracking-tighter leading-none text-white">
-                {product.name || product.id}
-              </h2>
-              <span className="text-[9px] bg-orange-500 text-white px-2.5 py-0.5 rounded-full font-black uppercase tracking-[0.2em] shadow-lg shadow-orange-500/20">
-                {product.productLabel || "Wavistrong Standard"}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-8 gap-y-1">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xl font-black italic text-blue-400 uppercase">
-                  ID {product.diameter} / PN {product.pressure}
-                </span>
-              </div>
-              <div className="flex items-center gap-6 border-l border-white/10 pl-6 h-6">
-                <div className="flex flex-col">
-                  <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest leading-none">
-                    Artikelcode
-                  </span>
-                  <span className="text-[11px] font-black text-white/90 uppercase">
-                    {product.articleCode || "—"}
-                  </span>
-                </div>
-                {product.extraCode && (
-                  <div className="flex flex-col">
-                    <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest leading-none">
-                      Extra Code
-                    </span>
-                    <span className="text-[11px] font-black text-emerald-400 uppercase tracking-widest">
-                      {product.extraCode}
-                    </span>
-                  </div>
-                )}
-                <div className="flex flex-col">
-                  <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest leading-none">
-                    System ID
-                  </span>
-                  <span className="text-[11px] font-bold text-slate-500 tracking-tighter uppercase font-mono">
-                    {String(product.id).slice(-8)}
-                  </span>
-                </div>
-              </div>
-            </div>
+        </div>
+
+        {dataLoading ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-20 text-slate-400">
+            <Loader2 className="animate-spin mb-4" size={40} />
+            <p className="font-black uppercase text-xs">Data inladen...</p>
           </div>
-        </div>
-        <div className="bg-slate-50 border-b flex px-8 gap-10 shrink-0">
-          <button
-            onClick={() => setActiveDetailTab("info")}
-            className={`py-4 text-[10px] font-black uppercase tracking-widest border-b-2 ${
-              activeDetailTab === "info"
-                ? "border-blue-600 text-slate-900"
-                : "border-transparent text-slate-400"
-            }`}
+        ) : (
+          <form
+            onSubmit={handleSubmit}
+            className="flex-1 overflow-y-auto p-8 lg:p-10 custom-scrollbar text-left"
           >
-            <Layout size={14} /> Informatie
-          </button>
-          <button
-            onClick={() => setActiveDetailTab("specs")}
-            className={`py-4 text-[10px] font-black uppercase tracking-widest border-b-2 ${
-              activeDetailTab === "specs"
-                ? "border-blue-600 text-slate-900"
-                : "border-transparent text-slate-400"
-            }`}
-          >
-            <Ruler size={14} /> Technische Maten
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-white">
-          {activeDetailTab === "info" && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 animate-in slide-in-from-bottom-2 h-full">
-              <div className="lg:col-span-9 h-full">
-                <div className="aspect-[16/9] lg:aspect-auto lg:h-[550px] bg-slate-50 rounded-[3rem] border border-slate-100 flex items-center justify-center p-2 overflow-hidden shadow-inner relative group bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white to-slate-50">
-                  {product.image ? (
-                    <img
-                      src={product.image}
-                      alt=""
-                      className="w-full h-full object-contain group-hover:scale-105 transition-all duration-1000"
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* KOLOM 1: CONFIG */}
+              <div className="space-y-6">
+                <section>
+                  <label className="block text-[9px] font-black text-slate-400 uppercase mb-2 ml-1">
+                    Type
+                  </label>
+                  <select
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-emerald-500"
+                    value={formData.type}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        type: e.target.value,
+                        diameter: "-",
+                      })
+                    }
+                  >
+                    <option value="-">- Type -</option>
+                    {settings.product_names?.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </section>
+                <div className="grid grid-cols-2 gap-4">
+                  <section>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase mb-2 ml-1">
+                      Mof
+                    </label>
+                    <select
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-3 py-3 text-xs font-bold outline-none"
+                      value={formData.connection}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          connection: e.target.value,
+                          pressure: "-",
+                          diameter: "-",
+                        })
+                      }
+                    >
+                      <option value="-">-</option>
+                      {settings.connections?.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </section>
+                  <section>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase mb-2 ml-1">
+                      PN
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-3 py-3 text-xs font-bold"
+                      value={formData.pressure}
+                      onChange={(e) =>
+                        setFormData({ ...formData, pressure: e.target.value })
+                      }
                     />
-                  ) : (
-                    <div className="flex flex-col items-center gap-4 text-slate-200">
-                      <ImageIcon size={140} strokeWidth={0.5} />
-                      <p className="text-[10px] font-black uppercase tracking-[0.4em] opacity-40">
-                        Asset preview unavailable
-                      </p>
-                    </div>
-                  )}
-                  <div className="absolute bottom-6 left-6 flex items-center gap-2 bg-white/80 backdrop-blur-md px-4 py-2 rounded-2xl border border-slate-100 shadow-sm">
-                    <Fingerprint className="text-blue-500" size={14} />
-                    <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest">
-                      Certified Asset
-                    </span>
-                  </div>
+                  </section>
                 </div>
-              </div>
-              <div className="lg:col-span-3 space-y-4 flex flex-col justify-start">
+                <section>
+                  <label className="block text-[9px] font-black text-slate-400 uppercase mb-2 ml-1">
+                    ID (Diameter)
+                  </label>
+                  <input
+                    type="number"
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold"
+                    value={formData.diameter}
+                    onChange={(e) =>
+                      setFormData({ ...formData, diameter: e.target.value })
+                    }
+                  />
+                </section>
                 <button
-                  onClick={() => onExportPDF(product)}
-                  className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] flex items-center justify-center gap-3 hover:bg-blue-600 transition-all shadow-lg"
+                  type="button"
+                  onClick={fetchTechnicalSpecs}
+                  disabled={fetchingSpecs}
+                  className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg flex items-center justify-center gap-3"
                 >
-                  <Download size={16} /> Export PDF
+                  {fetchingSpecs ? (
+                    <Loader2 className="animate-spin" size={16} />
+                  ) : (
+                    <Zap size={16} />
+                  )}{" "}
+                  Haal maatvoering op (Preview)
                 </button>
-                <div className="p-4 bg-emerald-50/40 rounded-2xl border border-emerald-100/50">
-                  <p className="text-[8px] font-black text-emerald-600/70 uppercase tracking-widest mb-3">
-                    Magazijn Status
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-white rounded-lg text-emerald-600 shadow-sm">
-                      <Warehouse size={14} />
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-black text-emerald-900 uppercase leading-none">
-                        {moffen.find(
-                          (m) =>
-                            m.type === product.type &&
-                            Number(m.diameter) === Number(product.diameter) &&
-                            String(m.pressure) === String(product.pressure)
-                        )?.location || "Niet Geregistreerd"}
-                      </p>
-                    </div>
-                  </div>
+              </div>
+
+              {/* KOLOM 2: PREVIEW MATEN (NIET PERSISTENT) */}
+              <div className="space-y-6 bg-slate-50/50 p-6 rounded-[32px] border border-slate-100">
+                <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <Ruler size={14} /> 2. Preview Maten (mm)
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  {["B1", "B2", "BA", "A1", "L", "Z", "BD", "W"].map(
+                    (field) => (
+                      <div key={field}>
+                        <label className="block text-[9px] font-black text-slate-400 uppercase mb-1 ml-1">
+                          {field}
+                        </label>
+                        <input
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:border-blue-400 outline-none"
+                          value={formData[field]}
+                          readOnly
+                        />
+                      </div>
+                    )
+                  )}
                 </div>
-                <div className="p-5 bg-blue-50/40 rounded-2xl border border-blue-100/40 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck size={14} className="text-blue-500" />
-                    <span className="text-[9px] font-black text-blue-600 uppercase tracking-widest">
-                      Integriteit
-                    </span>
-                  </div>
-                  <p className="text-[9px] font-bold text-blue-800/60 leading-relaxed uppercase italic tracking-tight">
-                    Data gesynchroniseerd met Master Database. QC-metingen zijn
-                    leidend bij afname.
-                  </p>
+                <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 mt-4 opacity-80 italic text-[9px] font-bold text-amber-800 text-center">
+                  Let op: Deze maten worden dynamisch ingeladen in de catalogus.
                 </div>
               </div>
-            </div>
-          )}
-          {activeDetailTab === "specs" && (
-            <div className="space-y-12 animate-in slide-in-from-right-2 text-left">
-              <section>
-                <div className="flex items-center gap-3 mb-6 border-b pb-3 border-slate-100">
-                  <div className="p-2 bg-blue-50 text-blue-600 rounded-lg shadow-sm">
-                    <Box size={16} />
+
+              {/* KOLOM 3: MEDIA & LABEL */}
+              <div className="space-y-6">
+                <section className="bg-slate-900 rounded-3xl p-6 text-white shadow-xl">
+                  <label className="block text-[9px] font-black text-emerald-400 uppercase mb-2">
+                    Systeem Naam
+                  </label>
+                  <div className="text-xl font-black italic tracking-tighter leading-tight">
+                    {formData.name || "Wachten..."}
                   </div>
-                  <h3 className="text-[11px] font-black uppercase text-slate-800 tracking-[0.2em]">
-                    Fitting Specificaties
-                  </h3>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
-                  {groupedSpecs.fitting.map((s, i) => (
-                    <SpecCell key={i} spec={s} />
-                  ))}
-                  {groupedSpecs.fitting.length === 0 && (
-                    <p className="text-[10px] font-bold text-slate-300 uppercase italic">
-                      Geen maten
-                    </p>
-                  )}
-                </div>
-              </section>
-              <section>
-                <div className="flex items-center gap-3 mb-6 border-b pb-3 border-slate-100">
-                  <div className="p-2 bg-slate-100 text-slate-600 rounded-lg shadow-sm">
-                    <Database size={16} />
-                  </div>
-                  <h3 className="text-[11px] font-black uppercase text-slate-800 tracking-[0.2em]">
-                    Mof Dimensies (Bell)
-                  </h3>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
-                  {groupedSpecs.bell.map((s, i) => (
-                    <SpecCell key={i} spec={s} />
-                  ))}
-                  {groupedSpecs.bell.length === 0 && (
-                    <p className="text-[10px] font-bold text-slate-300 uppercase italic">
-                      Geen mof maten gevonden
-                    </p>
-                  )}
-                </div>
-              </section>
+                </section>
+                <section className="bg-emerald-50 p-6 rounded-[32px] border-2 border-emerald-100 shadow-inner">
+                  <label className="block text-[10px] font-black text-emerald-800 uppercase mb-3">
+                    Systeem Label (Verplicht)
+                  </label>
+                  <select
+                    className="w-full bg-white border-2 rounded-2xl px-4 py-4 text-sm font-bold"
+                    value={formData.label}
+                    onChange={(e) =>
+                      setFormData({ ...formData, label: e.target.value })
+                    }
+                    required
+                  >
+                    <option value="-">- Selecteer Label -</option>
+                    {settings.labels?.map((l) => (
+                      <option key={l} value={l}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                </section>
+              </div>
             </div>
-          )}
-        </div>
+
+            <div className="mt-10 pt-8 border-t border-slate-100 flex flex-col items-center">
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full max-w-sm bg-emerald-600 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-emerald-700 shadow-xl flex items-center justify-center gap-3"
+              >
+                {loading ? (
+                  <Loader2 className="animate-spin" size={18} />
+                ) : (
+                  <Save size={18} />
+                )}
+                <span>Product Opslaan</span>
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
 };
 
-export default ProductDetailModal;
+export default ProductForm;

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, Suspense, lazy } from "react";
+import React, { useState, useMemo, Suspense, lazy, useEffect } from "react";
 import {
   Loader2,
   Package,
@@ -7,10 +7,13 @@ import {
   LayoutDashboard,
   Wrench,
   ArrowDownCircle,
+  MessageSquare,
 } from "lucide-react";
 import { signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { auth } from "./config/firebase";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { auth, db, appId } from "./config/firebase";
 
+// Basis Componenten
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import LoginView from "./components/LoginView";
@@ -21,31 +24,29 @@ import ProductDetailModal from "./components/products/ProductDetailModal";
 import { useAdminAuth } from "./hooks/useAdminAuth";
 import { useProductsData } from "./hooks/useProductsData";
 import { useSettingsData } from "./hooks/useSettingsData";
-import useInventory from "./hooks/useInventory";
 import { useMessages } from "./hooks/useMessages";
 
-// Lazy Loading voor zwaardere admin componenten
+// Lazy Loading
 const AdminDashboard = lazy(() => import("./components/admin/AdminDashboard"));
+const AdminUsersView = lazy(() => import("./components/admin/AdminUsersView"));
+const AdminLocationsView = lazy(() =>
+  import("./components/admin/AdminLocationsView")
+);
+const MessagesManager = lazy(() =>
+  import("./components/admin/messages/MessagesManager")
+);
+const CalculatorView = lazy(() => import("./components/CalculatorView"));
+const AiAssistantView = lazy(() => import("./components/AiAssistantView"));
 const AdminProductManager = lazy(() =>
   import("./components/admin/AdminProductManager")
 );
 const AdminMatrixManager = lazy(() =>
   import("./components/admin/matrixmanager/AdminMatrixManager")
 );
-const AdminUploadView = lazy(() =>
-  import("./components/admin/AdminUploadView")
-);
-const AdminUsersView = lazy(() => import("./components/admin/AdminUsersView"));
-const MessagesManager = lazy(() =>
-  import("./components/admin/messages/MessagesManager")
-);
-const CalculatorView = lazy(() => import("./components/CalculatorView"));
-const AiAssistantView = lazy(() => import("./components/AiAssistantView"));
+
+// GEFIXT: Nieuw pad naar de verplaatste DigitalPlanningHub component
 const DigitalPlanningHub = lazy(() =>
-  import("./components/admin/digitalplanning/DigitalPlanningHub")
-);
-const AdminLocationsView = lazy(() =>
-  import("./components/admin/AdminLocationsView")
+  import("./components/digitalplanning/DigitalPlanningHub")
 );
 
 const App = () => {
@@ -54,6 +55,7 @@ const App = () => {
   const [viewingProduct, setViewingProduct] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [loginError, setLoginError] = useState(null);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const [filters, setFilters] = useState({
     type: "-",
@@ -78,25 +80,57 @@ const App = () => {
     loadMore,
     hasMore,
   } = useProductsData();
-  const {
-    generalConfig,
-    bellDimensions,
-    productRange,
-    standardFittingSpecs,
-    toleranceSettings,
-    productTemplates,
-    boreDimensions,
-  } = useSettingsData(user);
-  const { inventory } = useInventory();
+  const { generalConfig, productTemplates, productRange } =
+    useSettingsData(user);
   const { unreadCount } = useMessages(user);
 
-  // Filter Logica
+  // Check of de gebruiker zijn wachtwoord moet wijzigen
+  useEffect(() => {
+    const checkTempPassword = async () => {
+      if (user && user.email) {
+        try {
+          const userRef = doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "user_roles",
+            user.email.toLowerCase()
+          );
+          const snap = await getDoc(userRef);
+          if (snap.exists() && snap.data().tempPassword) {
+            setMustChangePassword(true);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    };
+    checkTempPassword();
+  }, [user]);
+
+  const handlePasswordChanged = async () => {
+    if (!user) return;
+    const userRef = doc(
+      db,
+      "artifacts",
+      appId,
+      "public",
+      "data",
+      "user_roles",
+      user.email.toLowerCase()
+    );
+    await updateDoc(userRef, { tempPassword: null });
+    setMustChangePassword(false);
+  };
+
   const filteredProducts = useMemo(() => {
     if (!products) return [];
     return products.filter((p) => {
       if (searchQuery) {
         const terms = searchQuery.toLowerCase().trim().split(/\s+/);
-        const match = terms.every(
+        return terms.every(
           (t) =>
             String(p.name || "")
               .toLowerCase()
@@ -108,38 +142,18 @@ const App = () => {
               .toLowerCase()
               .includes(t)
         );
-        if (!match) return false;
       }
-      if (filters.type !== "-" && p.type !== filters.type) return false;
-      if (
-        filters.diameter !== "-" &&
-        String(p.diameter) !== String(filters.diameter)
-      )
-        return false;
       return true;
     });
-  }, [products, searchQuery, filters]);
+  }, [products, searchQuery]);
 
-  /**
-   * Verbeterde Login Handler met Foutafhandeling
-   */
   const handleLogin = async (email, password) => {
     setLoginError(null);
     try {
       await signInWithEmailAndPassword(auth, email, password);
     } catch (err) {
-      console.error("Login Fout:", err.code);
-      if (
-        err.code === "auth/invalid-credential" ||
-        err.code === "auth/wrong-password" ||
-        err.code === "auth/user-not-found"
-      ) {
-        setLoginError("E-mailadres of wachtwoord is onjuist.");
-      } else {
-        setLoginError(
-          "Er is een probleem met de verbinding. Probeer het later opnieuw."
-        );
-      }
+      setLoginError("Inloggen mislukt. Controleer gegevens.");
+      throw err;
     }
   };
 
@@ -150,13 +164,21 @@ const App = () => {
       </div>
     );
 
-  // Forceer login voor anonieme of niet-ingelogde gebruikers
-  if (!user || user.isAnonymous) {
-    return <LoginView onLogin={handleLogin} error={loginError} />;
+  if (!user || user.isAnonymous || mustChangePassword) {
+    return (
+      <LoginView
+        onLogin={handleLogin}
+        error={loginError}
+        mustChangePassword={mustChangePassword}
+        onPasswordChanged={handlePasswordChanged}
+      />
+    );
   }
 
+  const goToDashboard = () => setActiveTab("admin_dashboard");
+
   return (
-    <div className="flex flex-col h-screen bg-slate-50 font-sans overflow-hidden">
+    <div className="flex flex-col h-screen bg-slate-50 font-sans overflow-hidden text-left">
       <Header
         user={user}
         isAdminMode={isAdminMode}
@@ -167,17 +189,28 @@ const App = () => {
         logoUrl={generalConfig?.logoUrl}
         appName={generalConfig?.appName}
         unreadCount={unreadCount}
+        onNotificationClick={() => setActiveTab("messages")}
       />
 
       <div className="bg-white border-b px-6 pt-2 flex gap-4 shadow-sm z-10 overflow-x-auto no-scrollbar shrink-0">
         {[
           { id: "products", label: "Catalogus", icon: <Package size={14} /> },
           {
+            id: "inventory",
+            label: "Gereedschappen",
+            icon: <Wrench size={14} />,
+          },
+          {
             id: "calculator",
             label: "Calculator",
             icon: <Calculator size={14} />,
           },
           { id: "ai", label: "AI Expert", icon: <Sparkles size={14} /> },
+          {
+            id: "messages",
+            label: "Berichten",
+            icon: <MessageSquare size={14} />,
+          },
         ].map((t) => (
           <button
             key={t.id}
@@ -224,8 +257,14 @@ const App = () => {
                 setFilters={setFilters}
                 isOpen={isSidebarOpen}
                 toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                uniqueTypes={[...new Set(products.map((p) => p.type))]
+                  .filter(Boolean)
+                  .sort()}
+                uniqueDiameters={[...new Set(products.map((p) => p.diameter))]
+                  .filter(Boolean)
+                  .sort((a, b) => a - b)}
               />
-              <div className="flex-1 overflow-y-auto bg-slate-100 text-left custom-scrollbar">
+              <div className="flex-1 overflow-y-auto bg-slate-100 custom-scrollbar">
                 <ProductSearchView
                   products={filteredProducts}
                   onProductClick={setViewingProduct}
@@ -244,32 +283,48 @@ const App = () => {
             </>
           )}
 
+          {activeTab === "inventory" && (
+            <AdminLocationsView onBack={() => setActiveTab("products")} />
+          )}
+          {activeTab === "calculator" && <CalculatorView />}
           {activeTab === "ai" && (
-            <div className="flex-1 p-6 flex justify-center items-center bg-slate-50">
-              <div className="w-full max-w-5xl h-full">
-                <AiAssistantView
-                  products={products}
-                  currentSearch={searchQuery}
-                />
-              </div>
-            </div>
-          )}
-          {activeTab === "admin_dashboard" && (
-            <AdminDashboard navigate={setActiveTab} />
-          )}
-          {activeTab === "admin_users" && (
-            <AdminUsersView onBack={() => setActiveTab("admin_dashboard")} />
-          )}
-          {activeTab === "admin_digital_planning" && (
-            <DigitalPlanningHub
-              onBack={() => setActiveTab("admin_dashboard")}
-            />
+            <AiAssistantView products={products} currentSearch={searchQuery} />
           )}
           {(activeTab === "messages" || activeTab === "admin_messages") && (
             <MessagesManager onBack={() => setActiveTab("products")} />
           )}
+          {activeTab === "admin_dashboard" && (
+            <AdminDashboard navigate={setActiveTab} />
+          )}
+          {activeTab === "admin_products" && (
+            <AdminProductManager onBack={goToDashboard} />
+          )}
+          {activeTab === "admin_locations" && (
+            <AdminLocationsView onBack={goToDashboard} />
+          )}
+          {activeTab === "admin_matrix" && (
+            <AdminMatrixManager
+              onBack={goToDashboard}
+              productTemplates={productTemplates}
+              productRange={productRange}
+            />
+          )}
+          {activeTab === "admin_digital_planning" && (
+            <DigitalPlanningHub onBack={goToDashboard} />
+          )}
+          {activeTab === "admin_users" && (
+            <AdminUsersView onBack={goToDashboard} />
+          )}
         </Suspense>
       </main>
+
+      {viewingProduct && (
+        <ProductDetailModal
+          product={viewingProduct}
+          onClose={() => setViewingProduct(null)}
+          userRole={role}
+        />
+      )}
     </div>
   );
 };
