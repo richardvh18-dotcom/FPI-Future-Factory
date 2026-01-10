@@ -15,11 +15,12 @@ import { useAdminAuth } from "../../hooks/useAdminAuth";
 
 /**
  * AdminDashboard: Filtert menu-items op basis van gebruikersrol.
- * GEFIXT: Layout gecentreerd en responsive gemaakt.
+ * GEFIXT: Layout gecentreerd, responsive en hersteld naar de gewenste stijl.
  */
 const AdminDashboard = ({ navigate, stats = {} }) => {
   const { role } = useAdminAuth();
 
+  // De volledige lijst met beheer-opties zoals gevraagd
   const allItems = [
     {
       id: "admin_products",
@@ -87,10 +88,11 @@ const AdminDashboard = ({ navigate, stats = {} }) => {
     },
   ];
 
+  // Filter items op basis van de huidige rol van de gebruiker
   const menuItems = allItems.filter((item) => item.roles.includes(role));
 
   return (
-    <div className="flex flex-col items-center w-full py-10 px-6 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar">
+    <div className="flex flex-col items-center w-full py-10 px-6 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar text-left">
       <div className="w-full max-w-7xl space-y-10">
         {/* Header - Gecentreerd */}
         <div className="flex flex-col items-center text-center border-b border-slate-200 pb-10">
@@ -116,7 +118,7 @@ const AdminDashboard = ({ navigate, stats = {} }) => {
               onClick={() => navigate(item.id)}
               className={`group flex flex-col p-8 rounded-[40px] border-2 text-left transition-all duration-500 transform hover:-translate-y-2 bg-white ${item.color} border-transparent shadow-sm hover:shadow-2xl hover:border-white`}
             >
-              <div className="flex items-start justify-between mb-8">
+              <div className="flex items-start justify-between mb-8 text-left">
                 <div className="p-5 bg-white rounded-3xl shadow-md group-hover:scale-110 group-hover:rotate-3 transition-all duration-500">
                   {item.icon}
                 </div>
@@ -125,10 +127,10 @@ const AdminDashboard = ({ navigate, stats = {} }) => {
                   className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity"
                 />
               </div>
-              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
+              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight text-left">
                 {item.title}
               </h3>
-              <p className="text-sm text-slate-500 font-medium mt-3 leading-relaxed opacity-80">
+              <p className="text-sm text-slate-500 font-medium mt-3 leading-relaxed opacity-80 text-left">
                 {item.desc}
               </p>
             </button>

@@ -1,5 +1,4 @@
 import React from "react";
-// Importeer iconen individueel. Als een icoon niet bestaat, geeft dit een duidelijke fout of we vallen terug op een standaard.
 import {
   Layers,
   Package,
@@ -7,48 +6,39 @@ import {
   Database,
   Activity,
   Hash,
-  PlusCircle,
+  RotateCw,
 } from "lucide-react";
 import LibrarySection from "./LibrarySection";
 
 /**
- * LibraryView: Beheert de centrale bibliotheek met alle dropdown-waarden.
- * Bevat extra beveiliging tegen 'undefined' componenten.
+ * LibraryView: Beheert de dropdown-opties in de database.
+ * Gecorrigeerd om robuust om te gaan met libraryData en ondersteunt nu 'Graden'.
  */
 const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
-  // Veiligheidsfunctie voor iconen om 'undefined' crashes te voorkomen
-  const SafeIcon = (IconComponent, color) => {
-    if (!IconComponent)
-      return <PlusCircle size={18} className="text-slate-400" />;
-    return <IconComponent size={18} className={color} />;
-  };
-
   const addToLibrary = (key, value) => {
     if (!value || !value.toString().trim()) return;
     let newValue = value.toString().trim();
 
-    if (key === "pns" || key === "diameters") {
+    // PN, Diameters en Graden opslaan als getallen indien mogelijk
+    if (key === "pns" || key === "diameters" || key === "angles") {
       const num = Number(newValue);
       if (!isNaN(num)) newValue = num;
     }
 
     setLibraryData((prev) => {
-      // Data herstel: ondersteun zowel 'codes' als 'extraCodes'
-      const targetKey =
-        key === "extraCodes" && !prev.extraCodes && prev.codes ? "codes" : key;
-      const currentList = Array.isArray(prev[targetKey]) ? prev[targetKey] : [];
-
+      const currentList = Array.isArray(prev[key]) ? prev[key] : [];
       if (currentList.includes(newValue)) return prev;
 
       const updatedList = [...currentList, newValue];
 
-      if (key === "pns" || key === "diameters") {
+      // Sortering (nummers vs tekst)
+      if (key === "pns" || key === "diameters" || key === "angles") {
         updatedList.sort((a, b) => a - b);
       } else {
         updatedList.sort();
       }
 
-      return { ...prev, [targetKey]: updatedList };
+      return { ...prev, [key]: updatedList };
     });
 
     if (setHasUnsavedChanges) setHasUnsavedChanges(true);
@@ -56,37 +46,36 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
 
   const removeFromLibrary = (key, value) => {
     setLibraryData((prev) => {
-      const targetKey =
-        key === "extraCodes" && !prev.extraCodes && prev.codes ? "codes" : key;
-      const currentList = Array.isArray(prev[targetKey]) ? prev[targetKey] : [];
+      const currentList = Array.isArray(prev[key]) ? prev[key] : [];
       return {
         ...prev,
-        [targetKey]: currentList.filter((i) => i !== value),
+        [key]: currentList.filter((i) => i !== value),
       };
     });
 
     if (setHasUnsavedChanges) setHasUnsavedChanges(true);
   };
 
-  // Zorg dat we nooit 'undefined' data naar de secties sturen
+  // VEILIGE DATA MAPPING
   const data = {
     connections: libraryData?.connections || [],
     product_names: libraryData?.product_names || [],
     labels: libraryData?.labels || [],
-    extraCodes: libraryData?.extraCodes || libraryData?.codes || [],
+    extraCodes: libraryData?.extraCodes || [],
     pns: libraryData?.pns || [],
     diameters: libraryData?.diameters || [],
+    angles: libraryData?.angles || [], // NIEUW
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 w-full max-w-7xl mx-auto pb-24 px-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 text-left pb-20">
       <LibrarySection
         title="Moffen & Verbindingen"
         items={data.connections}
         onAdd={(v) => addToLibrary("connections", v)}
         onRemove={(v) => removeFromLibrary("connections", v)}
-        placeholder="Bijv. CB, TB, FL..."
-        icon={SafeIcon(Layers, "text-blue-500")}
+        placeholder="Bijv. CB, TB..."
+        icon={<Layers size={18} className="text-blue-500" />}
       />
 
       <LibrarySection
@@ -95,7 +84,7 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
         onAdd={(v) => addToLibrary("product_names", v)}
         onRemove={(v) => removeFromLibrary("product_names", v)}
         placeholder="Bijv. Elbow, Tee..."
-        icon={SafeIcon(Package, "text-purple-500")}
+        icon={<Package size={18} className="text-purple-500" />}
       />
 
       <LibrarySection
@@ -103,17 +92,18 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
         items={data.labels}
         onAdd={(v) => addToLibrary("labels", v)}
         onRemove={(v) => removeFromLibrary("labels", v)}
-        placeholder="Bijv. Standaard..."
-        icon={SafeIcon(Tag, "text-orange-500")}
+        placeholder="Bijv. Potable, WRAS..."
+        icon={<Tag size={18} className="text-orange-500" />}
       />
 
+      {/* NIEUW: GRADEN CATEGORIE */}
       <LibrarySection
-        title="Extra Codes"
-        items={data.extraCodes}
-        onAdd={(v) => addToLibrary("extraCodes", v)}
-        onRemove={(v) => removeFromLibrary("extraCodes", v)}
-        placeholder="Bijv. SDR11, WRAS..."
-        icon={SafeIcon(Database, "text-emerald-500")}
+        title="Graden (Hoeken)"
+        items={data.angles}
+        onAdd={(v) => addToLibrary("angles", v)}
+        onRemove={(v) => removeFromLibrary("angles", v)}
+        placeholder="Bijv. 45, 90..."
+        icon={<RotateCw size={18} className="text-amber-500" />}
       />
 
       <LibrarySection
@@ -122,7 +112,7 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
         onAdd={(v) => addToLibrary("pns", v)}
         onRemove={(v) => removeFromLibrary("pns", v)}
         placeholder="Bijv. 10, 16..."
-        icon={SafeIcon(Activity, "text-red-500")}
+        icon={<Activity size={18} className="text-red-500" />}
       />
 
       <LibrarySection
@@ -131,7 +121,16 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
         onAdd={(v) => addToLibrary("diameters", v)}
         onRemove={(v) => removeFromLibrary("diameters", v)}
         placeholder="Bijv. 80, 100..."
-        icon={SafeIcon(Hash, "text-cyan-500")}
+        icon={<Hash size={18} className="text-cyan-500" />}
+      />
+
+      <LibrarySection
+        title="Extra Codes"
+        items={data.extraCodes}
+        onAdd={(v) => addToLibrary("extraCodes", v)}
+        onRemove={(v) => removeFromLibrary("extraCodes", v)}
+        placeholder="Bijv. SDR11..."
+        icon={<Database size={18} className="text-emerald-500" />}
       />
     </div>
   );

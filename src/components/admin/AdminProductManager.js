@@ -16,28 +16,18 @@ import {
 import { useProductsData } from "../../hooks/useProductsData";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
 import { db, appId } from "../../config/firebase";
-import {
-  doc,
-  deleteDoc,
-  updateDoc,
-  addDoc,
-  collection,
-  serverTimestamp,
-} from "firebase/firestore";
+import { doc, deleteDoc, updateDoc } from "firebase/firestore";
 
-// Nieuwe import van de losse component
-import ProductForm from "./ProductForm";
-
-const AdminProductManager = ({ onBack }) => {
+/**
+ * AdminProductManager: Beheert de productlijst en validaties.
+ * GEFIXT: Gebruikt nu onAddNew prop om naar de nieuwe product weergave te gaan.
+ */
+const AdminProductManager = ({ onBack, onAddNew }) => {
   const { products, loading } = useProductsData();
   const { user, role } = useAdminAuth();
   const [searchTerm, setSearchTerm] = useState("");
   const [activeView, setActiveView] = useState("all");
   const [expandedGroups, setExpandedGroups] = useState({});
-
-  // Modal states
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingProduct, setEditingProduct] = useState(null);
 
   const canApprove = ["admin", "engineer"].includes(role);
 
@@ -75,14 +65,10 @@ const AdminProductManager = ({ onBack }) => {
   // --- ACTIES ---
   const handleApprove = async (product) => {
     if (!product?.id || !appId || !user?.uid) return;
-
     const currentApprovals = Array.isArray(product.approvals)
       ? product.approvals
       : [];
-    if (currentApprovals.includes(user.uid)) {
-      alert("Je hebt dit product al gevalideerd.");
-      return;
-    }
+    if (currentApprovals.includes(user.uid)) return;
 
     const newApprovals = [...currentApprovals, user.uid];
     const userName =
@@ -107,23 +93,27 @@ const AdminProductManager = ({ onBack }) => {
         approvedAt: isFullyApproved ? new Date().toISOString() : null,
       });
     } catch (e) {
-      alert("Validatie fout: " + e.message);
+      console.error("Validatie fout:", e);
     }
   };
 
   const handleDelete = async (id) => {
     if (!id || !window.confirm("Product definitief verwijderen?")) return;
-    await deleteDoc(
-      doc(
-        db,
-        "artifacts",
-        String(appId),
-        "public",
-        "data",
-        "products",
-        String(id)
-      )
-    );
+    try {
+      await deleteDoc(
+        doc(
+          db,
+          "artifacts",
+          String(appId),
+          "public",
+          "data",
+          "products",
+          String(id)
+        )
+      );
+    } catch (e) {
+      console.error("Verwijderen mislukt:", e);
+    }
   };
 
   return (
@@ -131,27 +121,25 @@ const AdminProductManager = ({ onBack }) => {
       <div className="w-full max-w-6xl p-8 space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-8 rounded-[32px] shadow-sm border border-slate-200 gap-4">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 text-left">
             <button
               onClick={onBack}
               className="p-3 bg-slate-100 hover:bg-slate-200 rounded-2xl text-slate-400 transition-all"
             >
               <ArrowLeft size={20} />
             </button>
-            <div>
+            <div className="text-left">
               <h2 className="text-3xl font-black text-slate-800 tracking-tighter italic uppercase">
                 Product <span className="text-blue-600">Manager</span>
               </h2>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
                 Gecentraliseerd Beheer
               </p>
             </div>
           </div>
+          {/* GEFIXT: Gebruikt nu de onAddNew prop voor navigatie */}
           <button
-            onClick={() => {
-              setEditingProduct(null);
-              setIsModalOpen(true);
-            }}
+            onClick={onAddNew}
             className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-600 shadow-xl transition-all flex items-center gap-2"
           >
             <Plus size={18} /> Nieuw Product
@@ -165,8 +153,8 @@ const AdminProductManager = ({ onBack }) => {
               onClick={() => setActiveView("all")}
               className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                 activeView === "all"
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-400"
+                  ? "bg-slate-900 text-white shadow-md"
+                  : "text-slate-400 hover:text-slate-600"
               }`}
             >
               Catalogus
@@ -175,8 +163,8 @@ const AdminProductManager = ({ onBack }) => {
               onClick={() => setActiveView("pending")}
               className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all relative ${
                 activeView === "pending"
-                  ? "bg-orange-500 text-white"
-                  : "text-slate-400"
+                  ? "bg-orange-500 text-white shadow-md"
+                  : "text-slate-400 hover:text-slate-600"
               }`}
             >
               Wachtrij
@@ -188,8 +176,8 @@ const AdminProductManager = ({ onBack }) => {
               size={20}
             />
             <input
-              className="w-full bg-white border-2 border-slate-100 rounded-[24px] pl-14 pr-6 py-4 text-sm font-bold outline-none focus:border-blue-500"
-              placeholder="Zoek in manager..."
+              className="w-full bg-white border-2 border-slate-100 rounded-[24px] pl-14 pr-6 py-4 text-sm font-bold outline-none focus:border-blue-500 shadow-inner"
+              placeholder="Snel zoeken in de database..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -217,7 +205,7 @@ const AdminProductManager = ({ onBack }) => {
                   }
                   className="w-full flex items-center justify-between p-6 bg-slate-50/50 hover:bg-slate-100 transition-colors"
                 >
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-4 text-left">
                     {expandedGroups[type] ? (
                       <ChevronDown size={20} className="text-slate-400" />
                     ) : (
@@ -235,7 +223,7 @@ const AdminProductManager = ({ onBack }) => {
                       <thead className="bg-slate-50/30 border-b text-[10px] font-black text-slate-400 uppercase tracking-widest">
                         <tr>
                           <th className="px-8 py-4">Informatie</th>
-                          <th className="px-8 py-4">Status</th>
+                          <th className="px-8 py-4 text-left">Status</th>
                           <th className="px-8 py-4 text-right">Acties</th>
                         </tr>
                       </thead>
@@ -246,23 +234,23 @@ const AdminProductManager = ({ onBack }) => {
                             className="hover:bg-slate-50/50 group transition-colors"
                           >
                             <td className="px-8 py-6">
-                              <p className="text-sm font-black text-slate-800">
+                              <p className="text-sm font-black text-slate-800 text-left">
                                 {product.name}
                               </p>
-                              <p className="text-[10px] font-bold text-slate-400 font-mono italic">
+                              <p className="text-[10px] font-bold text-slate-400 font-mono italic text-left">
                                 {product.articleCode || product.id}
                               </p>
                             </td>
-                            <td className="px-8 py-6">
+                            <td className="px-8 py-6 text-left">
                               {product.status === "approved" ? (
                                 <div className="text-emerald-500 text-[10px] font-black uppercase italic flex items-center gap-1.5">
                                   <CheckCircle2 size={14} /> Gepubliceerd
                                 </div>
                               ) : (
-                                <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-3 text-left">
                                   <span className="text-orange-500 text-[10px] font-black uppercase italic flex items-center gap-1.5">
                                     <Clock size={14} />{" "}
-                                    {product.approvals?.length}/2 Validaties
+                                    {product.approvals?.length || 0}/2
                                   </span>
                                   {canApprove &&
                                     !product.approvals?.includes(user?.uid) && (
@@ -270,7 +258,7 @@ const AdminProductManager = ({ onBack }) => {
                                         onClick={() => handleApprove(product)}
                                         className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center gap-1 shadow-md"
                                       >
-                                        <UserCheck size={12} /> Check
+                                        <UserCheck size={12} /> Valideren
                                       </button>
                                     )}
                                 </div>
@@ -278,13 +266,7 @@ const AdminProductManager = ({ onBack }) => {
                             </td>
                             <td className="px-8 py-6 text-right">
                               <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button
-                                  onClick={() => {
-                                    setEditingProduct(product);
-                                    setIsModalOpen(true);
-                                  }}
-                                  className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
-                                >
+                                <button className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all">
                                   <Edit2 size={16} />
                                 </button>
                                 <button
@@ -306,17 +288,6 @@ const AdminProductManager = ({ onBack }) => {
           )}
         </div>
       </div>
-
-      {/* HET NIEUWE FORMULIER ALS LOSSE COMPONENT */}
-      <ProductForm
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        editingProduct={editingProduct}
-        user={user}
-        onSaveSuccess={() => {
-          // Eventuele extra acties na succesvol opslaan
-        }}
-      />
     </div>
   );
 };

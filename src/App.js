@@ -43,8 +43,9 @@ const AdminProductManager = lazy(() =>
 const AdminMatrixManager = lazy(() =>
   import("./components/admin/matrixmanager/AdminMatrixManager")
 );
-
-// GEFIXT: Nieuw pad naar de verplaatste DigitalPlanningHub component
+const AdminNewProductView = lazy(() =>
+  import("./components/admin/AdminNewProductView")
+);
 const DigitalPlanningHub = lazy(() =>
   import("./components/digitalplanning/DigitalPlanningHub")
 );
@@ -84,7 +85,6 @@ const App = () => {
     useSettingsData(user);
   const { unreadCount } = useMessages(user);
 
-  // Check of de gebruiker zijn wachtwoord moet wijzigen
   useEffect(() => {
     const checkTempPassword = async () => {
       if (user && user.email) {
@@ -293,11 +293,21 @@ const App = () => {
           {(activeTab === "messages" || activeTab === "admin_messages") && (
             <MessagesManager onBack={() => setActiveTab("products")} />
           )}
+
+          {/* BEHEER HUB ROUTES */}
           {activeTab === "admin_dashboard" && (
             <AdminDashboard navigate={setActiveTab} />
           )}
           {activeTab === "admin_products" && (
-            <AdminProductManager onBack={goToDashboard} />
+            <AdminProductManager
+              onBack={goToDashboard}
+              onAddNew={() => setActiveTab("admin_new_product")}
+            />
+          )}
+          {activeTab === "admin_new_product" && (
+            <AdminNewProductView
+              onBack={() => setActiveTab("admin_products")}
+            />
           )}
           {activeTab === "admin_locations" && (
             <AdminLocationsView onBack={goToDashboard} />
@@ -307,6 +317,7 @@ const App = () => {
               onBack={goToDashboard}
               productTemplates={productTemplates}
               productRange={productRange}
+              generalConfig={generalConfig} // FIX: Nu doorgegeven!
             />
           )}
           {activeTab === "admin_digital_planning" && (
