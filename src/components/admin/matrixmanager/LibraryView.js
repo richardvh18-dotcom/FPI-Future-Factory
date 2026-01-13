@@ -7,12 +7,13 @@ import {
   Activity,
   Hash,
   RotateCw,
+  Target,
 } from "lucide-react";
 import LibrarySection from "./LibrarySection";
 
 /**
  * LibraryView: Beheert de dropdown-opties in de database.
- * Gecorrigeerd om robuust om te gaan met libraryData en ondersteunt nu 'Graden'.
+ * UPDATE: 'Bore Dimensions' categorie toegevoegd voor centraal beheer van boringen.
  */
 const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
   const addToLibrary = (key, value) => {
@@ -64,7 +65,8 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
     extraCodes: libraryData?.extraCodes || [],
     pns: libraryData?.pns || [],
     diameters: libraryData?.diameters || [],
-    angles: libraryData?.angles || [], // NIEUW
+    angles: libraryData?.angles || [],
+    borings: libraryData?.borings || libraryData?.extraCodes || [], // Mapping voor boringen
   };
 
   return (
@@ -96,7 +98,6 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
         icon={<Tag size={18} className="text-orange-500" />}
       />
 
-      {/* NIEUW: GRADEN CATEGORIE */}
       <LibrarySection
         title="Graden (Hoeken)"
         items={data.angles}
@@ -104,6 +105,16 @@ const LibraryView = ({ libraryData, setLibraryData, setHasUnsavedChanges }) => {
         onRemove={(v) => removeFromLibrary("angles", v)}
         placeholder="Bijv. 45, 90..."
         icon={<RotateCw size={18} className="text-amber-500" />}
+      />
+
+      {/* NIEUW: BORE DIMENSIONS CATEGORIE */}
+      <LibrarySection
+        title="Bore Dimensions (Boring)"
+        items={data.borings}
+        onAdd={(v) => addToLibrary("borings", v)}
+        onRemove={(v) => removeFromLibrary("borings", v)}
+        placeholder="Bijv. DIN PN10, ANSI 150..."
+        icon={<Target size={18} className="text-indigo-500" />}
       />
 
       <LibrarySection

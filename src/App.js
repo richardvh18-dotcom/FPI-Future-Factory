@@ -57,6 +57,7 @@ const App = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [loginError, setLoginError] = useState(null);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
 
   const [filters, setFilters] = useState({
     type: "-",
@@ -130,7 +131,7 @@ const App = () => {
     return products.filter((p) => {
       if (searchQuery) {
         const terms = searchQuery.toLowerCase().trim().split(/\s+/);
-        return terms.every(
+        const matchSearch = terms.every(
           (t) =>
             String(p.name || "")
               .toLowerCase()
@@ -138,14 +139,54 @@ const App = () => {
             String(p.type || "")
               .toLowerCase()
               .includes(t) ||
+            String(p.articleCode || "")
+              .toLowerCase()
+              .includes(t) ||
             String(p.diameter || "")
               .toLowerCase()
               .includes(t)
         );
+        if (!matchSearch) return false;
       }
+      if (filters.type !== "-" && p.type !== filters.type) return false;
+      if (
+        filters.diameter !== "-" &&
+        String(p.diameter) !== String(filters.diameter)
+      )
+        return false;
+      if (
+        filters.pressure !== "-" &&
+        String(p.pressure) !== String(filters.pressure)
+      )
+        return false;
+      if (filters.connection !== "-" && p.connection !== filters.connection)
+        return false;
+      if (filters.angle !== "-" && String(p.angle) !== String(filters.angle))
+        return false;
+      if (filters.radius !== "-" && p.radius !== filters.radius) return false;
+      if (filters.boring !== "-" && p.drilling !== filters.boring) return false;
+      if (filters.productLabel !== "-" && p.label !== filters.productLabel)
+        return false;
       return true;
     });
-  }, [products, searchQuery]);
+  }, [products, searchQuery, filters]);
+
+  const sidebarData = useMemo(() => {
+    const getUnique = (key) =>
+      [...new Set(products.map((p) => p[key]))].filter(Boolean);
+    return {
+      types: getUnique("type").sort(),
+      diameters: getUnique("diameter").sort((a, b) => a - b),
+      pressures: getUnique("pressure").sort((a, b) => a - b),
+      connections: getUnique("connection").sort(),
+      angles: getUnique("angle").sort((a, b) => a - b),
+      radii: getUnique("radius").sort(),
+      borings: [...new Set(products.map((p) => p.drilling))]
+        .filter(Boolean)
+        .sort(),
+      labels: getUnique("label").sort(),
+    };
+  }, [products]);
 
   const handleLogin = async (email, password) => {
     setLoginError(null);
@@ -192,7 +233,7 @@ const App = () => {
         onNotificationClick={() => setActiveTab("messages")}
       />
 
-      <div className="bg-white border-b px-6 pt-2 flex gap-4 shadow-sm z-10 overflow-x-auto no-scrollbar shrink-0">
+      <div className="bg-white border-b px-6 pt-2 flex gap-4 shadow-sm z-10 overflow-x-auto no-scrollbar shrink-0 text-left">
         {[
           { id: "products", label: "Catalogus", icon: <Package size={14} /> },
           {
@@ -257,14 +298,16 @@ const App = () => {
                 setFilters={setFilters}
                 isOpen={isSidebarOpen}
                 toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-                uniqueTypes={[...new Set(products.map((p) => p.type))]
-                  .filter(Boolean)
-                  .sort()}
-                uniqueDiameters={[...new Set(products.map((p) => p.diameter))]
-                  .filter(Boolean)
-                  .sort((a, b) => a - b)}
+                uniqueTypes={sidebarData.types}
+                uniqueDiameters={sidebarData.diameters}
+                uniquePressures={sidebarData.pressures}
+                uniqueConnections={sidebarData.connections}
+                uniqueAngles={sidebarData.angles}
+                uniqueRadii={sidebarData.radii}
+                uniqueBorings={sidebarData.borings}
+                uniqueLabels={sidebarData.labels}
               />
-              <div className="flex-1 overflow-y-auto bg-slate-100 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto bg-slate-100 custom-scrollbar text-left">
                 <ProductSearchView
                   products={filteredProducts}
                   onProductClick={setViewingProduct}
@@ -273,7 +316,7 @@ const App = () => {
                   <div className="p-8 text-center">
                     <button
                       onClick={loadMore}
-                      className="bg-white border border-slate-300 text-slate-600 px-6 py-3 rounded-xl font-bold shadow-sm flex items-center gap-2 mx-auto"
+                      className="bg-white border border-slate-300 text-slate-600 px-6 py-3 rounded-xl font-bold shadow-sm flex items-center gap-2 mx-auto hover:bg-slate-50 active:scale-95 transition-all"
                     >
                       <ArrowDownCircle size={20} /> Meer laden...
                     </button>
@@ -301,12 +344,23 @@ const App = () => {
           {activeTab === "admin_products" && (
             <AdminProductManager
               onBack={goToDashboard}
-              onAddNew={() => setActiveTab("admin_new_product")}
+              onAddNew={() => {
+                setEditingProduct(null);
+                setActiveTab("admin_new_product");
+              }}
+              onEdit={(p) => {
+                setEditingProduct(p);
+                setActiveTab("admin_new_product");
+              }}
             />
           )}
           {activeTab === "admin_new_product" && (
             <AdminNewProductView
-              onBack={() => setActiveTab("admin_products")}
+              onBack={() => {
+                setEditingProduct(null);
+                setActiveTab("admin_products");
+              }}
+              editingProduct={editingProduct}
             />
           )}
           {activeTab === "admin_locations" && (
@@ -317,7 +371,7 @@ const App = () => {
               onBack={goToDashboard}
               productTemplates={productTemplates}
               productRange={productRange}
-              generalConfig={generalConfig} // FIX: Nu doorgegeven!
+              generalConfig={generalConfig}
             />
           )}
           {activeTab === "admin_digital_planning" && (

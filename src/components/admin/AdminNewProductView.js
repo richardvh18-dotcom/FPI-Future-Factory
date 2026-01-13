@@ -24,8 +24,19 @@ import {
   ChevronDown,
   Image as ImageIcon,
   Grid,
+  BookOpen,
+  FileCheck,
+  RotateCw,
+  CloudUpload,
+  FilePlus,
+  Layers,
+  BellRing,
+  Library,
+  CheckCircle2,
+  ExternalLink,
+  Trash2,
 } from "lucide-react";
-import { db } from "../../config/firebase";
+import { db, storage } from "../../config/firebase";
 import {
   collection,
   addDoc,
@@ -34,23 +45,36 @@ import {
   getDoc,
   getDocs,
   setDoc,
+  updateDoc,
 } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 /**
- * AdminNewProductView V2.6: Engineering Flow met Image Library
- * - Nieuw: Afbeelding gallerij & upload onder Registratie.
- * - Nieuw: PDF opslagpad naar /public/data/library_drawings.
- * - Fix: Layout stabiliteit behouden.
+ * AdminNewProductView V6.0: De Volledige Engineering Hub
+ * - MATRIX: PN en ID filters op basis van beschikbaarheidsmatrix.
+ * - BOCHTEN: Radius selectie (1.0D/1.5D) hersteld voor Elbow 90°.
+ * - MEDIA: Volledige Beeldbank en PDF-Bibliotheek.
+ * - NOTIFICATIE: Automatische inbox-melding naar Engineers bij indienen.
+ * - AUTO-NAME: Intelligente naamgeneratie inclusief Radius.
  */
-const AdminNewProductView = ({ onBack }) => {
+const AdminNewProductView = ({ onBack, editingProduct }) => {
   const [loading, setLoading] = useState(false);
   const [configLoading, setConfigLoading] = useState(true);
   const [specsVisible, setSpecsVisible] = useState(false);
-  const [showImageGallery, setShowImageGallery] = useState(false);
+
+  // Media State
+  const [showImageLibrary, setShowImageLibrary] = useState(false);
+  const [showPdfLibrary, setShowPdfLibrary] = useState(false);
+  const [existingImages, setExistingImages] = useState([]);
+  const [existingPdfs, setExistingPdfs] = useState([]);
+  const [uploadingMedia, setUploadingMedia] = useState(null);
 
   const targetAppId = "fittings-app-v1";
 
-  // Data van de server
+  // --- CONFIGURATIE HARDE VOLGORDE ---
+  const FITTING_ORDER = ["TW", "L", "Lo", "R", "Weight"];
+  const MOF_ORDER = ["B1", "B2", "BA", "A", "TWcb", "BD", "W"];
+
   const [library, setLibrary] = useState({
     connections: [],
     product_names: [],
@@ -63,9 +87,7 @@ const AdminNewProductView = ({ onBack }) => {
   });
   const [engineers, setEngineers] = useState([]);
   const [productRange, setProductRange] = useState({});
-  const [existingImages, setExistingImages] = useState([]);
 
-  // Formulier State
   const [formData, setFormData] = useState({
     extraCode: "-",
     type: "-",
@@ -84,17 +106,62 @@ const AdminNewProductView = ({ onBack }) => {
     assignedEngineer: "",
     imageUrl: "",
     specs: {},
+    sourcePdfs: [],
   });
 
-  const [pdfs, setPdfs] = useState([{ id: Date.now(), name: "", url: "" }]);
   const [specsStatus, setSpecsStatus] = useState("idle");
-  const [newImageLabel, setNewImageLabel] = useState("");
 
-  // --- 1. DATA LADEN ---
+  const isElbow = useMemo(
+    () => (formData.type || "").toLowerCase().includes("elbow"),
+    [formData.type]
+  );
+  const EXCLUDED_METADATA_KEYS = [
+    "id",
+    "pressure",
+    "diameter",
+    "type",
+    "lastupdated",
+    "timestamp",
+    "updatedby",
+    "articlecode",
+    "articlenumber",
+    "art.nr",
+    "status",
+    "createdby",
+  ];
+
+  // --- AUTOMATISCHE NAAM GENERATIE ---
+  useEffect(() => {
+    if (editingProduct) return;
+    let parts = [];
+    if (formData.type && formData.type !== "-")
+      parts.push(formData.type.toUpperCase());
+    if (isElbow && formData.angle && formData.angle !== "-")
+      parts.push(`${formData.angle}°`);
+    if (formData.radius && formData.radius !== "-") parts.push(formData.radius);
+    if (formData.connection && formData.connection !== "-")
+      parts.push(formData.connection.toUpperCase());
+    if (formData.diameter && formData.diameter !== "-")
+      parts.push(`ID${formData.diameter}`);
+    if (formData.pressure && formData.pressure !== "-")
+      parts.push(`PN${formData.pressure}`);
+    setFormData((prev) => ({ ...prev, name: parts.join(" ") }));
+  }, [
+    formData.type,
+    formData.angle,
+    formData.radius,
+    formData.connection,
+    formData.diameter,
+    formData.pressure,
+    isElbow,
+    editingProduct,
+  ]);
+
+  // --- INITIALISATIE ---
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [configSnap, rangeSnap, usersSnap, imagesSnap] =
+        const [configSnap, rangeSnap, usersSnap, imagesSnap, docsSnap] =
           await Promise.all([
             getDoc(
               doc(
@@ -138,81 +205,82 @@ const AdminNewProductView = ({ onBack }) => {
                 "product_images"
               )
             ),
+            getDocs(
+              collection(
+                db,
+                "artifacts",
+                targetAppId,
+                "public",
+                "data",
+                "library_drawings"
+              )
+            ),
           ]);
 
-        if (configSnap.exists()) {
-          const data = configSnap.data();
-          setLibrary({
-            connections: data.connections || [],
-            product_names: data.product_names || [],
-            labels: data.labels || [],
-            pns: data.pns || [],
-            diameters: data.diameters || [],
-            angles: data.angles || [],
-            borings: data.borings || data.extraCodes || [],
-            extraCodes: data.extraCodes || [],
-          });
-        }
+        if (configSnap.exists()) setLibrary(configSnap.data());
         if (rangeSnap.exists()) setProductRange(rangeSnap.data());
 
-        const engList = usersSnap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((u) => u.role === "engineer" || u.role === "admin");
-        setEngineers(engList);
-
+        const userList = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setEngineers(
+          userList.filter((u) =>
+            ["engineer", "admin", "teamleader"].includes(
+              (u.role || "").toLowerCase()
+            )
+          )
+        );
         setExistingImages(
           imagesSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
         );
+        setExistingPdfs(docsSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+
+        if (editingProduct) {
+          setFormData({
+            ...formData,
+            ...editingProduct,
+            sourcePdfs: editingProduct.sourcePdfs || [],
+          });
+          if (editingProduct.specs) {
+            setSpecsVisible(true);
+            setSpecsStatus("found");
+          }
+        }
       } catch (err) {
-        console.error("Data laden mislukt:", err);
+        console.error(err);
       } finally {
         setConfigLoading(false);
       }
     };
     fetchData();
-  }, []);
+  }, [editingProduct]);
 
-  // Naamgeving Logica
-  useEffect(() => {
-    let parts = [];
-    if (formData.type !== "-") parts.push(formData.type);
-    if (formData.type === "Elbow" && formData.angle !== "-")
-      parts.push(`${formData.angle}°`);
-    if (formData.radius !== "-" && formData.radius !== "")
-      parts.push(formData.radius);
-    if (formData.drilling !== "-") parts.push(formData.drilling);
-    if (formData.connection !== "-") parts.push(formData.connection);
-    if (formData.diameter !== "-") parts.push(`ID${formData.diameter}`);
-    if (formData.pressure !== "-") parts.push(`PN${formData.pressure}`);
-    if (formData.extraCode !== "-" && formData.extraCode !== "")
-      parts.push(`(${formData.extraCode})`);
-    setFormData((prev) => ({ ...prev, name: parts.join(" ") }));
-  }, [
-    formData.type,
-    formData.angle,
-    formData.radius,
-    formData.drilling,
-    formData.connection,
-    formData.diameter,
-    formData.pressure,
-    formData.extraCode,
-  ]);
+  // --- MATRIX BESCHIKBAARHEID FILTERS ---
+  const availablePNs = useMemo(() => {
+    const masterPNs = library.pns || [];
+    if (!productRange || formData.connection === "-") return masterPNs;
+    const connKey = formData.connection.split("/")[0].toUpperCase();
+    const matrixEntry =
+      productRange[connKey] || productRange[`${connKey}/${connKey}`];
+    return matrixEntry
+      ? Object.keys(matrixEntry)
+          .map(Number)
+          .sort((a, b) => a - b) || masterPNs
+      : masterPNs;
+  }, [formData.connection, productRange, library.pns]);
 
   const availableIDs = useMemo(() => {
-    if (formData.connection === "-" || formData.pressure === "-") return [];
+    const masterIDs = library.diameters || [];
+    if (formData.connection === "-" || formData.pressure === "-")
+      return masterIDs;
     const connKey = formData.connection.split("/")[0].toUpperCase();
     const pnKey = String(formData.pressure);
-    const matrix =
+    const matrixEntry =
       productRange[connKey] || productRange[`${connKey}/${connKey}`];
-    if (matrix && matrix[pnKey]) {
-      return (
-        matrix[pnKey].Algemeen ||
-        matrix[pnKey][formData.type] ||
-        library.diameters ||
-        []
-      );
+    if (matrixEntry && matrixEntry[pnKey]) {
+      const typeIds =
+        matrixEntry[pnKey][formData.type] || matrixEntry[pnKey]["Algemeen"];
+      if (typeIds?.length > 0) return [...typeIds].sort((a, b) => a - b);
     }
-    return [];
+    return masterIDs;
   }, [
     formData.connection,
     formData.pressure,
@@ -221,7 +289,97 @@ const AdminNewProductView = ({ onBack }) => {
     library.diameters,
   ]);
 
-  // --- HANDMATIGE DATA FETCH ---
+  // --- MEDIA HANDLERS ---
+  const handleUploadImage = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploadingMedia("image");
+    try {
+      const storageRef = ref(
+        storage,
+        `artifacts/${targetAppId}/product_images/${Date.now()}_${file.name}`
+      );
+      const snapshot = await uploadBytes(storageRef, file);
+      const downloadURL = await getDownloadURL(snapshot.ref);
+      const imgId = file.name.split(".")[0].replace(/[^a-zA-Z0-9]/g, "_");
+      await setDoc(
+        doc(
+          db,
+          "artifacts",
+          targetAppId,
+          "public",
+          "data",
+          "product_images",
+          imgId
+        ),
+        { name: file.name, url: downloadURL, createdAt: serverTimestamp() }
+      );
+      setFormData((prev) => ({ ...prev, imageUrl: downloadURL }));
+      setExistingImages((prev) => [
+        { name: file.name, url: downloadURL },
+        ...prev,
+      ]);
+      setShowImageLibrary(false);
+    } catch (err) {
+      alert("Upload mislukt.");
+    } finally {
+      setUploadingMedia(null);
+    }
+  };
+
+  const handleUploadPdf = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploadingMedia("pdf");
+    try {
+      const storageRef = ref(
+        storage,
+        `artifacts/${targetAppId}/library_drawings/${Date.now()}_${file.name}`
+      );
+      const snapshot = await uploadBytes(storageRef, file);
+      const downloadURL = await getDownloadURL(snapshot.ref);
+      const pdfId = file.name.split(".")[0].replace(/[^a-zA-Z0-9]/g, "_");
+      const newPdf = { name: file.name, url: downloadURL };
+      await setDoc(
+        doc(
+          db,
+          "artifacts",
+          targetAppId,
+          "public",
+          "data",
+          "library_drawings",
+          pdfId
+        ),
+        { ...newPdf, createdAt: serverTimestamp() }
+      );
+      setFormData((prev) => ({
+        ...prev,
+        sourcePdfs: [...prev.sourcePdfs, newPdf],
+      }));
+      setExistingPdfs((prev) => [newPdf, ...prev]);
+      setShowPdfLibrary(false);
+    } catch (err) {
+      alert("Upload mislukt.");
+    } finally {
+      setUploadingMedia(null);
+    }
+  };
+
+  const togglePdfFromLibrary = (pdf) => {
+    const exists = formData.sourcePdfs.find((p) => p.url === pdf.url);
+    if (exists)
+      setFormData((prev) => ({
+        ...prev,
+        sourcePdfs: prev.sourcePdfs.filter((p) => p.url !== pdf.url),
+      }));
+    else
+      setFormData((prev) => ({
+        ...prev,
+        sourcePdfs: [...prev.sourcePdfs, pdf],
+      }));
+  };
+
+  // --- SYNC LOGICA ---
   const handleFetchSpecs = async () => {
     if (
       formData.type === "-" ||
@@ -229,18 +387,29 @@ const AdminNewProductView = ({ onBack }) => {
       formData.pressure === "-" ||
       formData.diameter === "-"
     )
-      return;
+      return alert("Selecteer eerst alle basisparameters.");
     setSpecsStatus("fetching");
     try {
       const connPrefix = formData.connection.split("/")[0].toUpperCase();
       const pnPart = `PN${formData.pressure}`;
       const idPart = `ID${formData.diameter}`;
-      const bellCol =
-        connPrefix.toLowerCase() === "cb" ? "cb_dimensions" : "fitting_specs";
-      const bellId = `${connPrefix}_${pnPart}_${idPart}`;
-      const fitId = `${formData.type.toUpperCase()}_${connPrefix}_${pnPart}_${idPart}`;
+      const baseTypeRaw = formData.type
+        .split(" ")[0]
+        .replace("_Socket", "")
+        .replace("_SOCKET", "")
+        .toUpperCase();
+      const angleInId =
+        baseTypeRaw.includes("ELBOW") && formData.angle !== "-"
+          ? `${formData.angle}_`
+          : "";
 
-      const [bSnap, fSnap] = await Promise.all([
+      const standardFitId = `${baseTypeRaw}_${angleInId}${connPrefix}_${pnPart}_${idPart}`;
+      const socketFitId = `${baseTypeRaw}_SOCKET_${connPrefix}_${pnPart}_${idPart}`;
+      const bellCol =
+        connPrefix.toLowerCase() === "cb" ? "cb_dimensions" : "tb_dimensions";
+      const bellId = `${connPrefix}_${pnPart}_${idPart}`;
+
+      const [bellSnap, fitStandardSnap, fitSocketSnap] = await Promise.all([
         getDoc(
           doc(db, "artifacts", targetAppId, "public", "data", bellCol, bellId)
         ),
@@ -252,193 +421,183 @@ const AdminNewProductView = ({ onBack }) => {
             "public",
             "data",
             "standard_fitting_specs",
-            fitId
+            standardFitId
           )
         ),
-      ]);
-
-      let mergedSpecs = {};
-      if (bSnap.exists()) mergedSpecs = { ...mergedSpecs, ...bSnap.data() };
-      if (fSnap.exists()) mergedSpecs = { ...mergedSpecs, ...fSnap.data() };
-
-      const techSpecs = Object.fromEntries(
-        Object.entries(mergedSpecs).filter(
-          ([k]) => !["id", "pressure", "diameter", "type"].includes(k)
-        )
-      );
-
-      setFormData((prev) => ({ ...prev, specs: techSpecs }));
-      setSpecsStatus(Object.keys(techSpecs).length > 0 ? "found" : "not_found");
-      setSpecsVisible(true);
-    } catch (err) {
-      setSpecsStatus("not_found");
-    }
-  };
-
-  // --- OPSLAAN LOGICA ---
-  const handleSaveConcept = async (e) => {
-    e.preventDefault();
-    if (formData.label === "-") return alert("Systeem Label is verplicht.");
-    setLoading(true);
-    try {
-      // 1. Sla PDF metadata op in library_drawings indien gewenst
-      for (const pdf of pdfs.filter((p) => p.url)) {
-        const drawingId = pdf.name.replace(/\s+/g, "_") || `DRAW_${Date.now()}`;
-        await setDoc(
+        getDoc(
           doc(
             db,
             "artifacts",
             targetAppId,
             "public",
             "data",
-            "library_drawings",
-            drawingId
-          ),
-          {
-            ...pdf,
-            associatedProduct: formData.name,
-            timestamp: serverTimestamp(),
-          }
-        );
-      }
+            "standard_socket_specs",
+            socketFitId
+          )
+        ),
+      ]);
 
-      // 2. Sla het product op
+      let rawMerged = {};
+      let foundArticleCode = "";
+      if (bellSnap.exists()) rawMerged = { ...rawMerged, ...bellSnap.data() };
+      if (fitStandardSnap.exists())
+        rawMerged = { ...rawMerged, ...fitStandardSnap.data() };
+      if (fitSocketSnap.exists())
+        rawMerged = { ...rawMerged, ...fitSocketSnap.data() };
+
+      const filteredSpecs = {};
+      Object.entries(rawMerged).forEach(([key, val]) => {
+        const lowerKey = key.toLowerCase();
+        if (EXCLUDED_METADATA_KEYS.includes(lowerKey)) {
+          if (["articlecode", "articlenumber", "art.nr"].includes(lowerKey))
+            foundArticleCode = val;
+          return;
+        }
+        filteredSpecs[key] = val;
+      });
+
+      setFormData((prev) => ({
+        ...prev,
+        specs: filteredSpecs,
+        articleCode: foundArticleCode || prev.articleCode,
+      }));
+      setSpecsStatus(
+        Object.keys(filteredSpecs).length > 0 ? "found" : "not_found"
+      );
+      setSpecsVisible(true);
+    } catch (err) {
+      setSpecsStatus("not_found");
+    }
+  };
+
+  const handleSaveProduct = async (e) => {
+    e.preventDefault();
+    if (formData.label === "-") return alert("Label is verplicht.");
+    setLoading(true);
+    try {
       const productData = {
         ...formData,
-        sourcePdfs: pdfs.filter((p) => p.name || p.url),
-        status: "pending_approval",
-        isConcept: true,
-        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        createdAt: editingProduct?.createdAt || serverTimestamp(),
+        status: editingProduct ? formData.status : "pending_approval",
       };
-      await addDoc(
-        collection(db, "artifacts", targetAppId, "public", "data", "products"),
-        productData
-      );
 
-      alert("Product en documentatie succesvol opgeslagen.");
+      if (editingProduct?.id)
+        await updateDoc(
+          doc(
+            db,
+            "artifacts",
+            targetAppId,
+            "public",
+            "data",
+            "products",
+            editingProduct.id
+          ),
+          productData
+        );
+      else {
+        await addDoc(
+          collection(
+            db,
+            "artifacts",
+            targetAppId,
+            "public",
+            "data",
+            "products"
+          ),
+          productData
+        );
+
+        // STUUR BERICHT NAAR ENGINEER
+        const recipients = engineers.filter(
+          (u) =>
+            u.email === formData.assignedEngineer || u.receivesValidationAlerts
+        );
+        const uniqueEmails = [
+          ...new Set(recipients.map((r) => r.email.toLowerCase())),
+        ];
+        for (const email of uniqueEmails) {
+          await addDoc(
+            collection(
+              db,
+              "artifacts",
+              targetAppId,
+              "public",
+              "data",
+              "messages"
+            ),
+            {
+              from: "SYSTEM",
+              to: email,
+              subject: `VALIDATIE: ${formData.name}`,
+              content: `Product "${formData.name}" staat klaar voor validatie.`,
+              timestamp: serverTimestamp(),
+              read: false,
+              type: "validation_alert",
+            }
+          );
+        }
+      }
       onBack();
     } catch (err) {
-      alert("Fout bij opslaan: " + err.message);
+      alert("Opslaan mislukt.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- IMAGE UPLOAD SIMULATIE & OPSLAG ---
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file || !newImageLabel)
-      return alert("Voer eerst een naam in voor de afbeelding.");
-
-    // In deze omgeving simuleren we de upload en slaan metadata op
-    // In productie zou hier Firebase Storage logica staan
-    const dummyUrl =
-      "https://images.unsplash.com/photo-1581092160562-40aa08e78837?q=80&w=400";
-
-    try {
-      const imgRef = doc(
-        collection(
-          db,
-          "artifacts",
-          targetAppId,
-          "public",
-          "data",
-          "product_images"
-        )
-      );
-      await setDoc(imgRef, {
-        name: newImageLabel,
-        url: dummyUrl,
-        type: formData.type,
-        createdAt: serverTimestamp(),
-      });
-
-      setFormData((prev) => ({ ...prev, imageUrl: dummyUrl }));
-      setNewImageLabel("");
-      setShowImageGallery(false);
-      // Refresh gallery
-      const snap = await getDocs(
-        collection(
-          db,
-          "artifacts",
-          targetAppId,
-          "public",
-          "data",
-          "product_images"
-        )
-      );
-      setExistingImages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    } catch (e) {
-      alert("Fout bij registreren afbeelding.");
-    }
-  };
-
-  const addPdfRow = () =>
-    setPdfs([...pdfs, { id: Date.now(), name: "", url: "" }]);
-  const removePdfRow = (id) => setPdfs(pdfs.filter((p) => p.id !== id));
-
   if (configLoading)
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-50">
+      <div className="flex h-screen items-center justify-center">
         <Loader2 className="animate-spin text-blue-500" size={48} />
       </div>
     );
 
-  const isElbow = formData.type === "Elbow";
-  const isFlange =
-    formData.type.toLowerCase().includes("flange") ||
-    formData.type.toLowerCase().includes("flens");
-  const canFetch =
-    formData.connection !== "-" &&
-    formData.pressure !== "-" &&
-    formData.diameter !== "-";
-
   return (
-    <div className="w-full max-w-6xl mx-auto h-full flex flex-col overflow-hidden text-left animate-in fade-in duration-500 px-4">
+    <div className="w-full max-w-7xl mx-auto h-full flex flex-col overflow-hidden text-left animate-in fade-in duration-500 px-4 min-w-[1200px]">
       {/* Header */}
       <div className="bg-white p-8 rounded-[40px] shadow-sm border border-slate-200 flex justify-between items-center shrink-0 mb-6 mt-4">
         <div className="flex items-center gap-6">
           <button
             onClick={onBack}
-            className="p-3 bg-slate-100 hover:bg-slate-200 rounded-2xl text-slate-400 transition-all text-left"
+            className="p-3 bg-slate-100 hover:bg-slate-200 rounded-2xl text-slate-400 transition-all border-none bg-transparent shadow-none"
           >
             <ArrowLeft size={24} />
           </button>
-          <div>
+          <div className="text-left">
             <h2 className="text-3xl font-black text-slate-900 tracking-tighter uppercase italic">
-              Product <span className="text-blue-600">Configurator</span>
+              {editingProduct ? "Product" : "Nieuw Product"}{" "}
+              <span className="text-blue-600">Configurator</span>
             </h2>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 italic text-left">
-              Gevalideerde Invoer V2.6
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 italic">
+              V6.0 | Master Engineering Hub Active
             </p>
           </div>
         </div>
-        <div className="bg-blue-50 text-blue-600 p-4 rounded-3xl">
+        <div className="bg-blue-50 text-blue-600 p-4 rounded-3xl shadow-sm">
           <GraduationCap size={32} />
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-scroll custom-scrollbar pb-20 pr-2">
+      <div className="flex-1 overflow-y-auto custom-scrollbar pb-20 pr-2">
         <form
-          onSubmit={handleSaveConcept}
+          onSubmit={handleSaveProduct}
           className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
         >
           <div className="lg:col-span-8 space-y-6">
-            <div className="bg-white p-10 rounded-[45px] shadow-xl border border-slate-100 space-y-10">
-              {/* STAP 1: BASIS CONFIGURATIE */}
+            <div className="bg-white p-10 rounded-[45px] shadow-xl border border-slate-100 space-y-10 text-left">
+              {/* STAP 1: BASIS */}
               <section className="space-y-6">
-                <h3 className="text-xs font-black uppercase text-blue-500 tracking-[0.2em] flex items-center gap-2 italic text-left">
+                <h3 className="text-xs font-black uppercase text-blue-500 tracking-[0.2em] flex items-center gap-2 italic">
                   <Settings size={16} /> 1. Basis Configuratie
                 </h3>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
+                <div className="grid grid-cols-2 gap-6 text-left">
                   <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1 text-left">
+                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1">
                       Extra Code
                     </label>
                     <select
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none shadow-sm"
                       value={formData.extraCode}
                       onChange={(e) =>
                         setFormData({ ...formData, extraCode: e.target.value })
@@ -452,19 +611,18 @@ const AdminNewProductView = ({ onBack }) => {
                       ))}
                     </select>
                   </div>
-
                   <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1 text-left">
+                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1">
                       Product Type
                     </label>
                     <select
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none shadow-sm"
                       value={formData.type}
                       onChange={(e) =>
                         setFormData({ ...formData, type: e.target.value })
                       }
                     >
-                      <option value="-">- Selecteer Type -</option>
+                      <option value="-">- Kies Type -</option>
                       {library.product_names
                         ?.filter((n) => n !== "Algemeen")
                         .map((t) => (
@@ -476,93 +634,72 @@ const AdminNewProductView = ({ onBack }) => {
                   </div>
 
                   {isElbow && (
-                    <div className="animate-in slide-in-from-left duration-300">
-                      <label className="block text-[10px] font-black text-blue-600 uppercase mb-2 ml-1">
-                        Hoek (Graden)
-                      </label>
-                      <select
-                        className="w-full bg-blue-50 border-2 border-blue-100 rounded-2xl px-6 py-4 text-sm font-black"
-                        value={formData.angle}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            angle: e.target.value,
-                            radius: e.target.value === "90" ? "-" : "1.5D",
-                          })
-                        }
-                      >
-                        <option value="-">- Kies Hoek -</option>
-                        {library.angles?.map((angle) => (
-                          <option key={angle} value={angle}>
-                            {angle}°
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  {isElbow && formData.angle === "90" && (
-                    <div className="animate-in zoom-in duration-300 col-span-2">
-                      <label className="block text-[10px] font-black text-orange-600 uppercase mb-3 ml-1">
-                        Radius (90°)
-                      </label>
-                      <div className="grid grid-cols-2 gap-4">
-                        {["1.0D", "1.5D"].map((r) => (
-                          <button
-                            key={r}
-                            type="button"
-                            onClick={() =>
-                              setFormData({ ...formData, radius: r })
-                            }
-                            className={`py-4 rounded-2xl text-sm font-black uppercase transition-all border-2 ${
-                              formData.radius === r
-                                ? "bg-orange-500 border-orange-500 text-white shadow-lg"
-                                : "bg-slate-50 border-slate-100 text-slate-400 hover:border-orange-200"
-                            }`}
-                          >
-                            {r} Radius
-                          </button>
-                        ))}
+                    <div className="col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-left">
+                      <div>
+                        <label className="block text-[10px] font-black text-blue-600 uppercase mb-2 ml-1">
+                          Hoek (Graden)
+                        </label>
+                        <select
+                          className="w-full bg-blue-50 border-2 border-blue-100 rounded-2xl px-6 py-4 text-sm font-black text-blue-700 outline-none"
+                          value={formData.angle}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              angle: e.target.value,
+                              radius: e.target.value === "90" ? "-" : "1.5D",
+                            })
+                          }
+                        >
+                          <option value="-">- Kies Hoek -</option>
+                          {library.angles?.map((angle) => (
+                            <option key={angle} value={angle}>
+                              {angle}°
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                    </div>
-                  )}
-
-                  {isFlange && (
-                    <div className="animate-in slide-in-from-left duration-300">
-                      <label className="block text-[10px] font-black text-purple-600 uppercase mb-2 ml-1">
-                        Drilling / Boring
-                      </label>
-                      <select
-                        className="w-full bg-purple-50 border-2 border-purple-100 rounded-2xl px-6 py-4 text-sm font-black"
-                        value={formData.drilling}
-                        onChange={(e) =>
-                          setFormData({ ...formData, drilling: e.target.value })
-                        }
-                      >
-                        <option value="-">- Kies Boring -</option>
-                        {library.borings?.map((b) => (
-                          <option key={b} value={b}>
-                            {b}
-                          </option>
-                        ))}
-                      </select>
+                      {formData.angle === "90" && (
+                        <div className="animate-in zoom-in duration-300">
+                          <label className="block text-[10px] font-black text-orange-600 uppercase mb-2 ml-1">
+                            Radius (90°)
+                          </label>
+                          <div className="grid grid-cols-2 gap-3">
+                            {["1.0D", "1.5D"].map((r) => (
+                              <button
+                                key={r}
+                                type="button"
+                                onClick={() =>
+                                  setFormData({ ...formData, radius: r })
+                                }
+                                className={`py-4 rounded-2xl text-xs font-black uppercase transition-all border-2 ${
+                                  formData.radius === r
+                                    ? "bg-orange-500 border-orange-500 text-white shadow-lg"
+                                    : "bg-slate-50 border-slate-100 text-slate-400 hover:border-orange-200"
+                                }`}
+                              >
+                                {r}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               </section>
 
-              {/* STAP 2: MATRIX PARAMETERS */}
+              {/* STAP 2: MATRIX BESCHIKBAARHEID */}
               <section className="space-y-6 pt-10 border-t border-slate-50">
-                <h3 className="text-xs font-black uppercase text-emerald-500 tracking-[0.2em] flex items-center gap-2 italic text-left">
+                <h3 className="text-xs font-black uppercase text-emerald-500 tracking-[0.2em] flex items-center gap-2 italic">
                   <Database size={16} /> 2. Matrix Parameters
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
+                <div className="grid grid-cols-3 gap-6 text-left">
                   <div>
                     <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1">
                       Mof Verbinding
                     </label>
                     <select
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold shadow-sm"
                       value={formData.connection}
                       onChange={(e) =>
                         setFormData({
@@ -573,7 +710,7 @@ const AdminNewProductView = ({ onBack }) => {
                         })
                       }
                     >
-                      <option value="-">- Mof -</option>
+                      <option value="-">- Kies Mof -</option>
                       {library.connections?.map((c) => (
                         <option key={c} value={c}>
                           {c}
@@ -586,7 +723,7 @@ const AdminNewProductView = ({ onBack }) => {
                       Druk (PN)
                     </label>
                     <select
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold shadow-sm"
                       value={formData.pressure}
                       onChange={(e) =>
                         setFormData({
@@ -596,8 +733,8 @@ const AdminNewProductView = ({ onBack }) => {
                         })
                       }
                     >
-                      <option value="-">- PN -</option>
-                      {library.pns?.map((pn) => (
+                      <option value="-">- Kies PN -</option>
+                      {availablePNs.map((pn) => (
                         <option key={pn} value={pn}>
                           PN{pn}
                         </option>
@@ -609,14 +746,13 @@ const AdminNewProductView = ({ onBack }) => {
                       Diameter (ID)
                     </label>
                     <select
-                      disabled={formData.pressure === "-"}
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:border-emerald-500 disabled:opacity-30"
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold shadow-sm"
                       value={formData.diameter}
                       onChange={(e) =>
                         setFormData({ ...formData, diameter: e.target.value })
                       }
                     >
-                      <option value="-">- ID -</option>
+                      <option value="-">- Kies ID -</option>
                       {availableIDs.map((id) => (
                         <option key={id} value={id}>
                           ID{id}
@@ -625,255 +761,252 @@ const AdminNewProductView = ({ onBack }) => {
                     </select>
                   </div>
                 </div>
-
                 <div className="pt-4">
                   <button
                     type="button"
-                    disabled={!canFetch || loading}
+                    disabled={
+                      formData.diameter === "-" || specsStatus === "fetching"
+                    }
                     onClick={handleFetchSpecs}
                     className={`w-full py-6 rounded-[28px] font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-3 shadow-xl ${
-                      canFetch
+                      formData.diameter !== "-"
                         ? "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200"
-                        : "bg-slate-100 text-slate-300 opacity-50 cursor-not-allowed"
+                        : "bg-slate-100 text-slate-300"
                     }`}
                   >
                     {specsStatus === "fetching" ? (
                       <Loader2 className="animate-spin" size={20} />
                     ) : (
                       <Zap size={20} />
-                    )}
-                    Haal Matrix Gegevens Op
+                    )}{" "}
+                    Sync met Master Database
                   </button>
                 </div>
 
                 {specsVisible && (
-                  <div className="bg-slate-50 rounded-3xl p-8 border-2 border-blue-100 space-y-6 animate-in slide-in-from-top-4">
-                    <div className="flex justify-between items-center text-left">
-                      <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-widest flex items-center gap-2 italic">
-                        <Ruler size={14} /> Gekoppelde Technische Maten (mm)
+                  <div className="space-y-8 animate-in slide-in-from-top-4 duration-500">
+                    <div className="space-y-4">
+                      <h4 className="text-[11px] font-black text-blue-600 uppercase tracking-widest flex items-center gap-2 italic">
+                        <Ruler size={14} /> Fitting Afmetingen
                       </h4>
-                    </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-left">
-                      {Object.keys(formData.specs).length > 0 ? (
-                        Object.entries(formData.specs).map(([key, val]) => (
+                      <div className="bg-slate-50 rounded-3xl p-8 border-2 border-blue-100 grid grid-cols-5 gap-4 shadow-inner">
+                        {FITTING_ORDER.map((key) => (
                           <div key={key}>
-                            <label className="block text-[9px] font-black text-slate-400 uppercase mb-1 ml-1">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase mb-1">
                               {key}
                             </label>
                             <input
-                              className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs font-black text-slate-700 focus:border-blue-500 outline-none"
-                              value={val}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  specs: {
-                                    ...formData.specs,
-                                    [key]: e.target.value,
-                                  },
-                                })
-                              }
+                              className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs font-black shadow-sm"
+                              value={formData.specs[key] || ""}
+                              readOnly
                             />
                           </div>
-                        ))
-                      ) : (
-                        <div className="col-span-full py-6 text-center text-slate-400 italic text-xs">
-                          Geen maten gevonden.
-                        </div>
-                      )}
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="text-[11px] font-black text-emerald-600 uppercase tracking-widest flex items-center gap-2 italic">
+                        <Layers size={14} /> Mof Afmetingen
+                      </h4>
+                      <div className="bg-slate-50 rounded-3xl p-8 border-2 border-emerald-100 grid grid-cols-4 gap-4 shadow-inner">
+                        {MOF_ORDER.map((key) => (
+                          <div key={key}>
+                            <label className="block text-[9px] font-black text-slate-400 uppercase mb-1">
+                              {key}
+                            </label>
+                            <input
+                              className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs font-black shadow-sm"
+                              value={formData.specs[key] || ""}
+                              readOnly
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
               </section>
 
-              {/* STAP 3: REGISTRATIE & AFBEELDING */}
-              <section className="space-y-6 pt-10 border-t border-slate-50">
-                <h3 className="text-xs font-black uppercase text-purple-500 tracking-[0.2em] flex items-center gap-2 italic text-left">
-                  <FileText size={16} /> 3. Registratie & Bron
+              {/* STAP 3: MEDIA HUB */}
+              <section className="space-y-6 pt-10 border-t border-slate-50 text-left">
+                <h3 className="text-xs font-black uppercase text-purple-500 tracking-[0.2em] flex items-center gap-2 italic">
+                  <Paperclip size={16} /> 3. Media & Documentatie
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1">
-                      Artikelcode (ERP)
-                    </label>
-                    <input
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-purple-500 font-mono"
-                      placeholder="bijv. ART-12345"
-                      value={formData.articleCode}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          articleCode: e.target.value.toUpperCase(),
-                        })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1 text-left">
-                      Tekening Nummer
-                    </label>
-                    <input
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-purple-500"
-                      placeholder="bijv. DRAW-800-01"
-                      value={formData.manualDrawing}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          manualDrawing: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
 
-                {/* AFBEELDING SELECTIE & UPLOAD */}
-                <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 space-y-4">
+                {/* Image Hub */}
+                <div className="bg-slate-50 rounded-[32px] p-8 border border-slate-100 space-y-6">
                   <div className="flex justify-between items-center text-left">
-                    <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2 italic">
-                      <ImageIcon size={14} /> Product Afbeelding
-                    </h4>
-                    <button
-                      type="button"
-                      onClick={() => setShowImageGallery(!showImageGallery)}
-                      className="text-[9px] font-black text-purple-600 bg-purple-50 px-4 py-2 rounded-xl border border-purple-100 hover:bg-purple-100 transition-all flex items-center gap-2"
-                    >
-                      <Grid size={12} />{" "}
-                      {showImageGallery ? "Verberg Gallerij" : "Open Gallerij"}
-                    </button>
-                  </div>
-
-                  {showImageGallery ? (
-                    <div className="space-y-6 animate-in fade-in zoom-in duration-300">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                        {existingImages.map((img) => (
-                          <button
-                            key={img.id}
-                            type="button"
-                            onClick={() => {
-                              setFormData({ ...formData, imageUrl: img.url });
-                              setShowImageGallery(false);
-                            }}
-                            className={`group relative aspect-square bg-white rounded-xl border-2 overflow-hidden transition-all ${
-                              formData.imageUrl === img.url
-                                ? "border-emerald-500 shadow-md scale-95"
-                                : "border-slate-100 hover:border-blue-300"
-                            }`}
-                          >
-                            <img
-                              src={img.url}
-                              className="w-full h-full object-cover"
-                              alt={img.name}
-                            />
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                              <span className="text-[8px] font-black text-white uppercase text-center px-1">
-                                {img.name}
-                              </span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                      <div className="pt-4 border-t border-slate-200">
-                        <p className="text-[9px] font-black text-slate-400 uppercase mb-3 text-left italic">
-                          Of upload een nieuwe afbeelding:
-                        </p>
-                        <div className="flex gap-2">
-                          <input
-                            className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold outline-none"
-                            placeholder="Label (bijv. Elbow 90 TB)..."
-                            value={newImageLabel}
-                            onChange={(e) => setNewImageLabel(e.target.value)}
-                          />
-                          <label
-                            className={`cursor-pointer px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2 transition-all ${
-                              newImageLabel
-                                ? "bg-slate-900 text-white hover:bg-emerald-600"
-                                : "bg-slate-100 text-slate-300 cursor-not-allowed"
-                            }`}
-                          >
-                            <Upload size={12} /> Selecteer Bestand
-                            <input
-                              type="file"
-                              className="hidden"
-                              disabled={!newImageLabel}
-                              onChange={handleImageUpload}
-                              accept="image/*"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-4 text-left">
-                      {formData.imageUrl ? (
-                        <div className="w-16 h-16 rounded-xl border-2 border-emerald-500 overflow-hidden shadow-sm shrink-0">
-                          <img
-                            src={formData.imageUrl}
-                            className="w-full h-full object-cover"
-                            alt="Geselecteerd"
-                          />
-                        </div>
-                      ) : (
-                        <div className="w-16 h-16 rounded-xl bg-slate-100 flex items-center justify-center text-slate-300 shrink-0">
-                          <ImageIcon size={24} />
-                        </div>
-                      )}
-                      <p className="text-[10px] font-bold text-slate-500 italic uppercase">
-                        {formData.imageUrl
-                          ? "Afbeelding gekoppeld uit database."
-                          : "Geen afbeelding geselecteerd. Gebruik de gallerij knop."}
+                    <div>
+                      <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                        <ImageIcon size={14} className="text-blue-500" />{" "}
+                        Product Beeld
+                      </h4>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase mt-1 italic">
+                        Kies uit bibliotheek of upload nieuw
                       </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <label className="cursor-pointer bg-slate-900 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 hover:bg-blue-600 transition-all shadow-md">
+                        {uploadingMedia === "image" ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Upload size={14} />
+                        )}{" "}
+                        Upload
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleUploadImage}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowImageLibrary(!showImageLibrary)}
+                        className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 transition-all ${
+                          showImageLibrary
+                            ? "bg-blue-600 text-white shadow-lg"
+                            : "bg-white border-2 border-slate-200 text-slate-400 hover:border-blue-400"
+                        }`}
+                      >
+                        <Library size={14} /> Beeldbank
+                      </button>
+                    </div>
+                  </div>
+                  {showImageLibrary && (
+                    <div className="grid grid-cols-4 md:grid-cols-6 gap-3 bg-white p-4 rounded-2xl border border-slate-200 max-h-64 overflow-y-auto custom-scrollbar animate-in zoom-in">
+                      {existingImages.map((img) => (
+                        <button
+                          key={img.url}
+                          type="button"
+                          onClick={() => {
+                            setFormData({ ...formData, imageUrl: img.url });
+                            setShowImageLibrary(false);
+                          }}
+                          className={`aspect-square rounded-xl border-2 overflow-hidden transition-all ${
+                            formData.imageUrl === img.url
+                              ? "border-blue-500 scale-95 shadow-md"
+                              : "border-slate-50 hover:border-blue-200"
+                          }`}
+                        >
+                          <img
+                            src={img.url}
+                            className="w-full h-full object-cover"
+                            alt={img.name}
+                          />
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
 
-                <div className="space-y-4 pt-4 text-left">
-                  <div className="flex justify-between items-center text-left">
-                    <h4 className="text-[10px] font-black uppercase text-amber-500 tracking-widest flex items-center gap-2 italic">
-                      <Paperclip size={14} /> Bronvermelding (Opslag:
-                      /library_drawings)
+                {/* PDF Hub */}
+                <div className="bg-slate-50 rounded-[32px] p-8 border border-slate-100 space-y-6">
+                  <div className="flex justify-between items-center text-left text-left">
+                    <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                      <BookOpen size={14} className="text-purple-500" />{" "}
+                      Bronvermelding & PDF's
                     </h4>
-                    <button
-                      type="button"
-                      onClick={addPdfRow}
-                      className="text-[9px] font-black text-amber-600 bg-amber-50 px-4 py-2 rounded-xl border border-amber-100 flex items-center gap-1 hover:bg-amber-100 transition-all"
-                    >
-                      + PDF
-                    </button>
-                  </div>
-                  <div className="space-y-3 text-left">
-                    {pdfs.map((pdf, idx) => (
-                      <div
-                        key={pdf.id}
-                        className="flex gap-3 animate-in slide-in-from-right-4 duration-300"
+                    <div className="flex gap-2">
+                      <label className="cursor-pointer bg-slate-900 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 hover:bg-purple-600 transition-all shadow-md">
+                        {uploadingMedia === "pdf" ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <FilePlus size={14} />
+                        )}{" "}
+                        Nieuwe PDF
+                        <input
+                          type="file"
+                          accept=".pdf"
+                          className="hidden"
+                          onChange={handleUploadPdf}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowPdfLibrary(!showPdfLibrary)}
+                        className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 transition-all ${
+                          showPdfLibrary
+                            ? "bg-purple-600 text-white shadow-lg"
+                            : "bg-white border-2 border-slate-200 text-slate-400 hover:border-purple-400"
+                        }`}
                       >
-                        <input
-                          className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3 text-xs font-bold outline-none focus:border-amber-500"
-                          placeholder="Naam bron (bijv. TDS 2024)"
-                          value={pdf.name}
-                          onChange={(e) => {
-                            const n = [...pdfs];
-                            n[idx].name = e.target.value;
-                            setPdfs(n);
-                          }}
-                        />
-                        <input
-                          className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3 text-xs font-bold outline-none focus:border-amber-500"
-                          placeholder="Document Link (URL)..."
-                          value={pdf.url}
-                          onChange={(e) => {
-                            const n = [...pdfs];
-                            n[idx].url = e.target.value;
-                            setPdfs(n);
-                          }}
-                        />
-                        {pdfs.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => removePdfRow(pdf.id)}
-                            className="p-2 text-slate-300 hover:text-red-500 transition-all"
-                          >
-                            <X size={18} />
-                          </button>
-                        )}
+                        <Library size={14} /> Zoek Tekening
+                      </button>
+                    </div>
+                  </div>
+                  {showPdfLibrary && (
+                    <div className="bg-white p-4 rounded-2xl border border-slate-200 max-h-64 overflow-y-auto custom-scrollbar animate-in zoom-in space-y-1">
+                      {existingPdfs.map((pdf) => (
+                        <button
+                          key={pdf.url}
+                          type="button"
+                          onClick={() => togglePdfFromLibrary(pdf)}
+                          className={`w-full flex items-center justify-between p-3 rounded-xl border-2 transition-all ${
+                            formData.sourcePdfs.some((p) => p.url === pdf.url)
+                              ? "border-purple-500 bg-purple-50 text-purple-900"
+                              : "border-slate-50 hover:bg-slate-50 text-slate-500"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 text-left">
+                            <FileText size={16} />
+                            <span className="text-[11px] font-bold uppercase truncate max-w-xs">
+                              {pdf.name}
+                            </span>
+                          </div>
+                          {formData.sourcePdfs.some(
+                            (p) => p.url === pdf.url
+                          ) ? (
+                            <CheckCircle2
+                              size={16}
+                              className="text-purple-600"
+                            />
+                          ) : (
+                            <Plus size={16} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {formData.sourcePdfs.map((pdf, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-white border border-slate-200 p-4 rounded-2xl flex items-center justify-between shadow-sm animate-in slide-in-from-left"
+                      >
+                        <div className="flex items-center gap-3 text-left">
+                          <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
+                            <FileText size={18} />
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] font-black text-slate-800 uppercase truncate max-w-[150px]">
+                              {pdf.name}
+                            </span>
+                            <a
+                              href={pdf.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[9px] font-bold text-blue-500 hover:underline flex items-center gap-1 uppercase tracking-tighter"
+                            >
+                              Bekijk
+                              <ExternalLink size={8} />
+                            </a>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFormData((p) => ({
+                              ...p,
+                              sourcePdfs: p.sourcePdfs.filter(
+                                (_, i) => i !== idx
+                              ),
+                            }))
+                          }
+                          className="p-2 text-slate-300 hover:text-red-500 border-none bg-transparent"
+                        >
+                          <Trash2 size={16} />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -882,48 +1015,40 @@ const AdminNewProductView = ({ onBack }) => {
             </div>
           </div>
 
-          {/* RECHTER KOLOM: PREVIEW & VALIDATIE */}
           <div className="lg:col-span-4 space-y-6 text-left">
-            <div className="bg-slate-900 rounded-[45px] p-8 text-white shadow-2xl space-y-8 relative overflow-hidden">
+            <div className="bg-slate-900 rounded-[45px] p-8 text-white shadow-2xl space-y-8 relative overflow-hidden sticky top-6">
               <div className="absolute top-0 right-0 p-6 opacity-10">
                 <Fingerprint size={100} />
               </div>
-
               <div className="space-y-4">
-                <div className="relative aspect-video w-full bg-white/5 rounded-3xl border border-white/10 overflow-hidden flex items-center justify-center">
+                <div className="relative aspect-video w-full bg-white/5 rounded-3xl border border-white/10 flex items-center justify-center shadow-inner overflow-hidden">
                   {formData.imageUrl ? (
                     <img
                       src={formData.imageUrl}
                       className="w-full h-full object-cover"
-                      alt="Preview"
+                      alt="P"
                     />
                   ) : (
-                    <div className="text-center opacity-20">
-                      <ImageIcon size={48} />
-                      <p className="text-[9px] font-black uppercase mt-2">
-                        Geen Beeld
-                      </p>
-                    </div>
+                    <ImageIcon size={48} className="opacity-20" />
                   )}
                 </div>
                 <div className="space-y-1">
                   <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest italic">
-                    Systeem Naam
+                    Product Preview
                   </span>
                   <p className="text-2xl font-black italic tracking-tighter leading-tight break-words">
-                    {formData.name || "Configuratie..."}
+                    {formData.name || "Wachten op invoer..."}
                   </p>
                 </div>
               </div>
-
               <div className="space-y-6 border-t border-white/10 pt-8 text-left">
                 <div>
-                  <label className="block text-[9px] font-black text-slate-500 uppercase mb-2">
-                    Toegewezen Engineer
+                  <label className="block text-[9px] font-black text-slate-500 uppercase mb-2 flex items-center gap-2">
+                    <UserCheck size={12} /> Beheerder Toewijzen
                   </label>
                   <select
                     required
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-sm font-bold text-white outline-none focus:border-emerald-500 transition-all"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-sm font-bold text-white outline-none focus:border-emerald-500 transition-all shadow-sm"
                     value={formData.assignedEngineer}
                     onChange={(e) =>
                       setFormData({
@@ -932,32 +1057,32 @@ const AdminNewProductView = ({ onBack }) => {
                       })
                     }
                   >
-                    <option value="">- Kies Engineer -</option>
+                    <option value="">- Kies Beheerder -</option>
                     {engineers.map((eng) => (
                       <option
                         key={eng.id}
                         value={eng.email}
                         className="text-slate-900"
                       >
-                        {eng.name || eng.email}
+                        {eng.name || eng.email}{" "}
+                        {eng.receivesValidationAlerts ? "🔔" : ""}
                       </option>
                     ))}
                   </select>
                 </div>
-
-                <div>
+                <div className="grid grid-cols-1 gap-2 text-left">
                   <label className="block text-[10px] font-black text-slate-500 uppercase mb-3 ml-1">
                     Systeem Label (Verplicht)
                   </label>
-                  <div className="grid grid-cols-1 gap-2">
+                  <div className="flex flex-wrap gap-2 text-left">
                     {library.labels?.map((l) => (
                       <button
-                        type="button"
                         key={l}
+                        type="button"
                         onClick={() => setFormData({ ...formData, label: l })}
                         className={`px-5 py-3 rounded-2xl text-[10px] font-black uppercase transition-all border-2 ${
                           formData.label === l
-                            ? "bg-emerald-500 border-emerald-500 text-white shadow-lg"
+                            ? "bg-emerald-500 border-emerald-500 text-white shadow-lg shadow-emerald-500/20"
                             : "bg-white/5 border-white/10 text-slate-400 hover:border-white/20"
                         }`}
                       >
@@ -967,27 +1092,29 @@ const AdminNewProductView = ({ onBack }) => {
                   </div>
                 </div>
               </div>
-
-              <div className="space-y-4 pt-4">
+              <div className="space-y-4 pt-4 text-left">
                 <button
                   type="submit"
                   disabled={
-                    loading || formData.assignedEngineer === "" || !specsVisible
+                    loading || !formData.assignedEngineer || !specsVisible
                   }
-                  className="w-full bg-blue-600 text-white py-6 rounded-[30px] font-black text-xs uppercase tracking-widest hover:bg-blue-700 shadow-2xl shadow-blue-500/20 transition-all flex items-center justify-center gap-3 active:scale-95 disabled:opacity-30 disabled:grayscale"
+                  className="w-full bg-blue-600 text-white py-6 rounded-[30px] font-black text-xs uppercase tracking-widest hover:bg-blue-700 shadow-2xl transition-all disabled:opacity-30 active:scale-95 flex items-center justify-center gap-3"
                 >
                   {loading ? (
                     <Loader2 className="animate-spin" size={20} />
                   ) : (
                     <>
-                      <Save size={20} /> Opslaan als Concept
+                      <Save size={20} />{" "}
+                      {editingProduct
+                        ? "Wijzigingen Opslaan"
+                        : "Valideren & Indienen"}
                     </>
                   )}
                 </button>
                 <button
                   type="button"
                   onClick={onBack}
-                  className="w-full py-4 text-slate-400 font-black uppercase text-[10px] tracking-widest hover:text-white transition-colors text-center"
+                  className="w-full py-4 text-slate-400 font-black uppercase text-[10px] tracking-widest hover:text-white transition-colors text-center italic border-none bg-transparent shadow-none"
                 >
                   Annuleren
                 </button>

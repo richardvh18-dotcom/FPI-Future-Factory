@@ -13,23 +13,20 @@ import {
   LayoutDashboard,
   FileText,
   Settings,
-  Search,
+  FileUp,
 } from "lucide-react";
 import { doc, setDoc } from "firebase/firestore";
 import { db, appId } from "../../../config/firebase";
 
-// --- CORRECTE RELATIEVE IMPORTS ---
+// Imports van de sub-componenten
 import MatrixView from "./MatrixView";
 import LibraryView from "./LibraryView";
 import BlueprintsView from "./BlueprintsView";
 import DimensionsView from "./DimensionsView";
 import SpecsView from "./SpecsView";
+import BulkUploadView from "./BulkUploadView"; // NIEUW
 import AdminDashboard from "../AdminDashboard";
 
-/**
- * AdminMatrixManager: Beheert de technische configuratie van het systeem.
- * UPDATE: Knop 'Digital Planning' verwijderd uit de interne navigatie.
- */
 const AdminMatrixManager = ({
   productRange,
   productTemplates,
@@ -37,7 +34,6 @@ const AdminMatrixManager = ({
   onBack,
   stats = {},
 }) => {
-  // Standaard op 'matrix' (Beschikbaarheid) om direct in de tool te starten
   const [activeTab, setActiveTab] = useState("matrix");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ type: "", msg: "" });
@@ -53,15 +49,12 @@ const AdminMatrixManager = ({
     pns: [],
     diameters: [],
     angles: [],
+    borings: [],
   });
   const [blueprints, setBlueprints] = useState({});
 
-  // Sync props naar lokale state voor bewerking
   useEffect(() => {
-    if (productRange) {
-      setMatrixData(productRange);
-    }
-
+    if (productRange) setMatrixData(productRange);
     if (generalConfig) {
       setLibraryData({
         connections: generalConfig.connections || [],
@@ -77,17 +70,13 @@ const AdminMatrixManager = ({
         angles: generalConfig.angles
           ? [...generalConfig.angles].sort((a, b) => a - b)
           : [],
+        borings: generalConfig.borings || [],
       });
     }
-
-    if (productTemplates) {
-      setBlueprints(productTemplates);
-    }
+    if (productTemplates) setBlueprints(productTemplates);
   }, [productRange, generalConfig, productTemplates]);
 
-  /**
-   * handleNavigate: Vertaalt ID's uit de algemene Admin Hub naar interne tabs.
-   */
+  // FIX: Navigatie mapping voor dashboard IDs
   const handleNavigate = (targetId) => {
     switch (targetId) {
       case "admin_matrix":
@@ -96,9 +85,9 @@ const AdminMatrixManager = ({
       case "admin_settings":
         setActiveTab("library");
         break;
-      case "admin_locations":
-        setActiveTab("dimensions");
-        break;
+      case "admin_upload":
+        setActiveTab("admin_upload");
+        break; // NU GEKOPPELD
       default:
         setActiveTab(targetId);
     }
@@ -129,53 +118,45 @@ const AdminMatrixManager = ({
         data,
         { merge: true }
       );
-      setStatus({ type: "success", msg: "Matrix bijgewerkt!" });
+      setStatus({ type: "success", msg: "Opgeslagen!" });
       setHasUnsavedChanges(false);
     } catch (e) {
-      console.error("Opslaan mislukt:", e);
-      setStatus({ type: "error", msg: "Database fout." });
+      setStatus({ type: "error", msg: "Fout bij opslaan." });
     } finally {
       setLoading(false);
       setTimeout(() => setStatus({ type: "", msg: "" }), 3000);
     }
   };
 
-  // Gefilterde lijst met tabs (zonder Digital Planning)
   const TABS = [
     { id: "matrix", label: "Beschikbaarheid", icon: <Grid size={14} /> },
     { id: "library", label: "Bibliotheek", icon: <Settings size={14} /> },
     { id: "blueprints", label: "Blauwdrukken", icon: <Layers size={14} /> },
     { id: "dimensions", label: "Maatvoering", icon: <Ruler size={14} /> },
+    { id: "admin_upload", label: "Bulk Upload", icon: <FileUp size={14} /> }, // NU IN TABS
     { id: "specs", label: "Overzicht", icon: <FileText size={14} /> },
   ];
 
   return (
     <div className="flex flex-col min-h-full bg-slate-50 w-full items-center text-left">
-      {/* HEADER BALK */}
       <div className="bg-white border-b border-slate-200 px-8 py-4 flex justify-center items-center shrink-0 shadow-sm z-20 relative w-full h-20">
         <div className="absolute left-8 flex items-center">
           <button
-            onClick={
-              activeTab === "matrix" || activeTab === "dashboard"
-                ? onBack
-                : () => setActiveTab("matrix")
-            }
+            onClick={onBack}
             className="p-3 hover:bg-slate-100 rounded-2xl text-slate-400 transition-all flex items-center gap-2 text-xs font-black uppercase tracking-widest group"
           >
             <ArrowLeft
               size={18}
               className="group-hover:-translate-x-1 transition-transform"
-            />
+            />{" "}
             Terug
           </button>
         </div>
-
-        <div className="flex items-center gap-6 text-left">
+        <div className="flex items-center gap-6">
           <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3 italic uppercase leading-none">
-            <LayoutDashboard size={24} className="text-blue-600" /> Matrix{" "}
-            <span className="text-blue-600">Manager</span>
+            <LayoutDashboard size={24} className="text-blue-600" /> Manager{" "}
+            <span className="text-blue-600">Hub</span>
           </h2>
-
           {["matrix", "library", "blueprints"].includes(activeTab) && (
             <>
               <div className="h-8 w-px bg-slate-200"></div>
@@ -192,13 +173,12 @@ const AdminMatrixManager = ({
                   <RefreshCw className="animate-spin" size={18} />
                 ) : (
                   <Save size={18} />
-                )}
+                )}{" "}
                 Opslaan
               </button>
             </>
           )}
         </div>
-
         <div className="absolute right-8 flex items-center gap-4">
           <button
             onClick={() => setActiveTab("dashboard")}
@@ -207,7 +187,6 @@ const AdminMatrixManager = ({
                 ? "bg-blue-50 text-blue-600 shadow-inner"
                 : "text-slate-300 hover:bg-slate-50"
             }`}
-            title="Hub Dashboard"
           >
             <LayoutDashboard size={20} />
           </button>
@@ -234,10 +213,8 @@ const AdminMatrixManager = ({
           )}
         </div>
       </div>
-
-      {/* TABS (Toon alleen als we niet in het dashboard zijn) */}
       {activeTab !== "dashboard" && (
-        <div className="flex justify-center bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-10 w-full overflow-x-auto text-left">
+        <div className="flex justify-center bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-10 w-full overflow-x-auto">
           <div className="flex gap-4 px-8">
             {TABS.map((tab) => (
               <button
@@ -256,9 +233,7 @@ const AdminMatrixManager = ({
           </div>
         </div>
       )}
-
-      {/* CONTENT AREA */}
-      <div className="flex-1 overflow-y-auto bg-slate-50 custom-scrollbar w-full flex justify-center pb-20 text-left">
+      <div className="flex-1 overflow-y-auto bg-slate-50 custom-scrollbar w-full flex justify-center pb-20">
         {activeTab === "dashboard" ? (
           <AdminDashboard navigate={handleNavigate} stats={stats} />
         ) : (
@@ -295,6 +270,7 @@ const AdminMatrixManager = ({
                 appId={appId}
               />
             )}
+            {activeTab === "admin_upload" && <BulkUploadView />}
             {activeTab === "specs" && <SpecsView blueprints={blueprints} />}
           </div>
         )}

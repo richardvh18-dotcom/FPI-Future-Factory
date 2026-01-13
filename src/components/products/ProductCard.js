@@ -1,87 +1,94 @@
 import React from "react";
-import { Package, CircleDashed, ArrowRight } from "lucide-react";
+import {
+  Package,
+  ChevronRight,
+  Ruler,
+  Database,
+  ImageIcon,
+} from "lucide-react";
 
+/**
+ * ProductCard: Toont een product in de catalogus.
+ * GEFIXT: Afbeelding is nu zichtbaar in het overzicht.
+ */
 const ProductCard = ({ product, onClick }) => {
-  if (!product) return null;
-  const isBore = product.isBoreSpec === true;
-
   return (
     <div
-      onClick={onClick}
-      className={`bg-white rounded-[2rem] border transition-all cursor-pointer group relative overflow-hidden flex flex-col h-full animate-in text-left ${
-        isBore ? "border-slate-100" : "border-slate-200"
-      } hover:shadow-2xl hover:border-blue-500 hover:-translate-y-1`}
+      onClick={() => onClick(product)}
+      className="bg-white rounded-[32px] border border-slate-200 shadow-sm hover:shadow-xl hover:border-blue-300 transition-all cursor-pointer group flex flex-col overflow-hidden animate-in fade-in zoom-in duration-300"
     >
-      <div
-        className={`absolute top-0 right-0 px-4 py-2 rounded-bl-3xl font-black text-[8px] uppercase tracking-widest z-20 shadow-md ${
-          isBore ? "bg-slate-900 text-white" : "bg-emerald-600 text-white"
-        }`}
-      >
-        {isBore
-          ? "Referentie"
-          : product.productLabel || product.label || "Wavistrong"}
-      </div>
-      <div className="aspect-square flex items-center justify-center p-8 border-b bg-slate-50/50 relative overflow-hidden">
-        {isBore ? (
-          <CircleDashed
-            className="text-slate-300 group-hover:text-blue-500 transition-all duration-500"
-            size={80}
-          />
-        ) : product.image ? (
+      {/* Product Afbeelding / Placeholder */}
+      <div className="relative aspect-video w-full bg-slate-100 overflow-hidden">
+        {product.imageUrl ? (
           <img
-            src={product.image}
-            className="max-w-full max-h-full object-contain group-hover:scale-110 transition-transform duration-500"
-            alt=""
+            src={product.imageUrl}
+            alt={product.name}
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
           />
         ) : (
-          <Package className="text-slate-200" size={60} />
-        )}
-      </div>
-      <div className="p-6 flex flex-col flex-1">
-        <h3 className="text-sm font-black text-slate-900 uppercase italic tracking-tighter mb-4 group-hover:text-blue-700 leading-tight min-h-[2.5em]">
-          {product.name || product.id}
-        </h3>
-        {!isBore && (
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-              <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest">
-                Maat
-              </p>
-              <p className="text-xs font-black text-slate-900 uppercase italic mt-1">
-                ID {product.diameter} mm
-              </p>
-            </div>
-            <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
-              <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest">
-                Druk
-              </p>
-              <p className="text-xs font-black text-blue-600 uppercase italic mt-1">
-                PN {product.pressure}
-              </p>
-            </div>
+          <div className="w-full h-full flex flex-col items-center justify-center text-slate-300 gap-2">
+            <ImageIcon size={40} strokeWidth={1.5} />
+            <span className="text-[8px] font-black uppercase tracking-widest">
+              Geen Afbeelding
+            </span>
           </div>
         )}
-        <div className="mt-auto flex flex-wrap gap-2">
-          <span
-            className={`text-[9px] font-black px-3 py-1 rounded-xl border uppercase flex items-center gap-1.5 ${
-              isBore
-                ? "bg-slate-100 text-slate-600 border-slate-200"
-                : "bg-blue-50 text-blue-600 border-blue-100"
-            }`}
-          >
-            {isBore ? <CircleDashed size={10} /> : <Package size={10} />}{" "}
-            {product.type}
+
+        {/* Label Overlay */}
+        <div className="absolute top-3 left-3">
+          <span className="bg-slate-900/80 backdrop-blur-md text-white text-[8px] font-black px-2 py-1 rounded-lg uppercase tracking-widest border border-white/20">
+            {product.label || "Standaard"}
           </span>
         </div>
       </div>
-      <div className="px-6 py-3 border-t border-slate-50 bg-slate-50/30 flex items-center justify-between group-hover:bg-blue-50 transition-colors">
-        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest group-hover:text-blue-600 italic tracking-wider">
-          Gegevens Inzien
-        </span>
-        <ArrowRight
-          size={14}
-          className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-1 transition-all"
-        />
+
+      <div className="p-6 flex-1 flex flex-col text-left">
+        <div className="mb-4">
+          <h3 className="text-sm font-black text-slate-900 uppercase italic tracking-tight line-clamp-2 leading-tight">
+            {product.name}
+          </h3>
+          <p className="text-[9px] font-bold text-slate-400 font-mono mt-1 uppercase tracking-tighter">
+            {product.articleCode || product.id}
+          </p>
+        </div>
+
+        <div className="mt-auto grid grid-cols-2 gap-2">
+          <div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col">
+            <span className="text-[7px] font-black text-blue-500 uppercase tracking-widest">
+              Druk
+            </span>
+            <span className="text-xs font-black text-slate-700 leading-none">
+              PN {product.pressure}
+            </span>
+          </div>
+          <div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col">
+            <span className="text-[7px] font-black text-emerald-500 uppercase tracking-widest">
+              Maat
+            </span>
+            <span className="text-xs font-black text-slate-700 leading-none">
+              ID {product.diameter}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-slate-50 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <div
+              className={`w-1.5 h-1.5 rounded-full ${
+                product.status === "approved"
+                  ? "bg-emerald-500 animate-pulse"
+                  : "bg-orange-400"
+              }`}
+            />
+            <span className="text-[8px] font-black uppercase text-slate-400 tracking-widest">
+              {product.status === "approved" ? "Live" : "Concept"}
+            </span>
+          </div>
+          <ChevronRight
+            size={14}
+            className="text-slate-300 group-hover:text-blue-500 group-hover:translate-x-1 transition-all"
+          />
+        </div>
       </div>
     </div>
   );

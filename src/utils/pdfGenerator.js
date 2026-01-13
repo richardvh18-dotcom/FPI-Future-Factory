@@ -1,87 +1,165 @@
 import { jsPDF } from "jspdf";
-import "jspdf-autotable";
+import autoTable from "jspdf-autotable";
 
 /**
- * Genereert een PDF op basis van de rol van de gebruiker.
- * @param {Object} product - De productdata.
- * @param {String} role - De rol van de ingelogde gebruiker ('qc', 'admin', 'viewer', etc).
+ * imageToDataUri: Zet een URL om naar Base64 via een directe fetch.
+ * Dit is robuuster tegen CORS-beperkingen dan de canvas-methode.
  */
-export const generateProductPDF = (product, role = "viewer") => {
+const imageToDataUri = async (url) => {
+  if (!url) return null;
+
+  try {
+    // Gebruik een cachebuster om browser-caching van oude CORS-instellingen te voorkomen
+    const cleanUrl = url.includes("?")
+      ? `${url}&cb=${Date.now()}`
+      : `${url}?cb=${Date.now()}`;
+
+    const response = await fetch(cleanUrl, { mode: "cors" });
+    if (!response.ok) throw new Error("Netwerk response was niet ok");
+
+    const blob = await response.blob();
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error(
+      "PDF Generator Error: Afbeelding kon niet worden gedownload.",
+      error
+    );
+    return null;
+  }
+};
+
+/**
+ * generateProductPDF V6.4: Visual Technical Dossier (Stable Image Fetch)
+ * @param {Object} product - Productdata met imageUrl en technische specificaties.
+ * @param {String} role - De rol van de gebruiker (QC krijgt een andere kleur).
+ */
+export const generateProductPDF = async (product, role = "operator") => {
+  // Toon een kleine indicatie in de console dat we bezig zijn
+  console.log("PDF genereren voor:", product.name);
+
   const doc = new jsPDF();
   const isQC = role === "qc" || role === "admin";
+  const headerColor = isQC ? [51, 65, 85] : [16, 185, 129];
 
-  // 1. Header instellen
-  doc.setFillColor(isQC ? 51 : 15, isQC ? 65 : 23, isQC ? 85 : 42); // QC krijgt een donkerdere slate-kleur
-  doc.rect(0, 0, 210, 40, "F");
+  // --- 1. TITEL OPBOUW ---
+  const typePart =
+    product.type?.replace("_Socket", "").replace("_SOCKET", "") || "";
+  const anglePart =
+    product.angle && product.angle !== "-" ? `${product.angle}°` : "";
+  const radiusPart =
+    product.radius && product.radius !== "-" ? product.radius : "";
+  const connPart = product.connection || "";
+  const idPart = product.diameter ? `ID${product.diameter}` : "";
+  const pnPart = product.pressure ? `PN${product.pressure}` : "";
+
+  const fullTitle =
+    `${typePart} ${anglePart} ${radiusPart} ${connPart} ${idPart} ${pnPart}`
+      .replace(/\s+/g, " ")
+      .trim();
+
+  // --- 2. HEADER ONTWERP ---
+  doc.setFillColor(headerColor[0], headerColor[1], headerColor[2]);
+  doc.rect(0, 0, 210, 45, "F");
 
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(22);
   doc.setFont("helvetica", "bold");
-  doc.text(isQC ? "QC INSPECTIE RAPPORT" : "TECHNISCHE FICHE", 20, 20);
+  doc.setFontSize(18);
+  doc.text(fullTitle, 20, 20);
 
   doc.setFontSize(10);
-  doc.text(`PRODUCT: ${product.name || "Fitting"}`, 20, 30);
-  doc.text(`DATUM: ${new Date().toLocaleDateString()}`, 150, 30);
+  doc.setFont("helvetica", "normal");
+  doc.text(`LABEL: ${product.label || "Standaard"}`, 20, 30);
+  if (product.extraCode && product.extraCode !== "-") {
+    doc.text(`EXTRA CODE: ${product.extraCode}`, 20, 36);
+  }
+  doc.text(`DATUM: ${new Date().toLocaleDateString("nl-NL")}`, 150, 30);
+  doc.text(`ART.NR: ${product.articleCode || product.id || "-"}`, 150, 36);
 
-  // 2. Basis Informatie tabel
-  const basicInfo = [
-    ["Diameter (ID)", `ID ${product.diameter} mm`],
-    ["Drukklasse (PN)", `PN ${product.pressure}`],
-    ["Type", product.type || "-"],
-    ["Verbinding", product.connection || "-"],
-  ];
+  let currentY = 55;
 
-  doc.autoTable({
-    startY: 50,
-    head: [["Kenmerk", "Waarde"]],
-    body: basicInfo,
-    theme: "striped",
-    headStyles: { fillStyle: isQC ? [71, 85, 105] : [16, 185, 129] },
-  });
+  // --- 3. AFBEELDING SECTIE ---
+  if (product.imageUrl) {
+    const imgData = await imageToDataUri(product.imageUrl);
+    if (imgData) {
+      // Afbeelding centreren (breedte ca 90mm, hoogte ca 60mm)
+      const imgWidth = 90;
+      const imgHeight = 60;
+      const xPos = (210 - imgWidth) / 2;
 
-  // 3. QC SPECIFIEKE DATA (Alleen voor QC of Admin)
-  if (isQC) {
-    doc.setTextColor(51, 65, 85);
-    doc.setFontSize(14);
-    doc.text("Kwaliteit & Toleranties", 20, doc.lastAutoTable.finalY + 15);
-
-    const qcData = [
-      [
-        "Minimale Wanddikte",
-        `${(product.wall_thickness * 0.95).toFixed(2)} mm`,
-      ],
-      ["Maximale Wanddikte", `${(product.wall_thickness * 1.1).toFixed(2)} mm`],
-      ["Boring Target", `${product.bore_target || "-"} mm`],
-      ["Tolerantie Klasse", "ISO 2768-m"],
-      ["Oppervlakte Check", "Visueel - Geen laminatie"],
-    ];
-
-    doc.autoTable({
-      startY: doc.lastAutoTable.finalY + 20,
-      head: [["Inspectie Punt", "Specificatie"]],
-      body: qcData,
-      theme: "grid",
-      headStyles: { fillStyle: [249, 115, 22] }, // Oranje voor QC actie-punten
-    });
-
-    doc.setFontSize(8);
-    doc.setTextColor(150, 150, 150);
-    doc.text(
-      "Dit document is uitsluitend voor intern gebruik door de afdeling Quality Control.",
-      20,
-      285
-    );
+      // jsPDF probeert zelf het formaat te herkennen aan de base64 header
+      doc.addImage(
+        imgData,
+        "PNG",
+        xPos,
+        currentY,
+        imgWidth,
+        imgHeight,
+        undefined,
+        "FAST"
+      );
+      currentY += imgHeight + 15;
+    } else {
+      console.warn("Afbeelding overgeslagen wegens laadfout.");
+      currentY += 10;
+    }
   } else {
-    // Standaard Operator tekst
-    doc.setFontSize(10);
-    doc.setTextColor(100, 100, 100);
-    doc.text(
-      "Raadpleeg de mal-opbouw instructie in de app voor productie.",
-      20,
-      doc.lastAutoTable.finalY + 20
-    );
+    currentY += 10;
   }
 
-  // PDF downloaden
-  doc.save(`${isQC ? "QC_" : "TECH_"}${product.id}.pdf`);
+  // --- 4. TECHNISCHE MAATVOERING TABEL ---
+  doc.setTextColor(headerColor[0], headerColor[1], headerColor[2]);
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.text("Technische Maatvoering", 20, currentY);
+
+  const FITTING_FIELDS = ["TW", "L", "Lo", "R", "Weight"];
+  const MOF_FIELDS = ["B1", "B2", "BA", "A", "TWcb", "BD", "W"];
+
+  const tableData = [];
+  [...FITTING_FIELDS, ...MOF_FIELDS].forEach((key) => {
+    let val = product[key];
+    if (val === undefined || val === "") {
+      if (key === "A") val = product["A1"] || product["a1"];
+    }
+
+    if (val !== undefined && val !== null && val !== "") {
+      let unit = "mm";
+      if (key.toLowerCase().includes("weight")) unit = "kg";
+      tableData.push([key, `${val} ${unit}`, ""]);
+    }
+  });
+
+  autoTable(doc, {
+    startY: currentY + 5,
+    head: [["Variabele", "Nominale Waarde", "Tolerantie"]],
+    body: tableData,
+    theme: "grid",
+    headStyles: { fill: headerColor, fontStyle: "bold" },
+    styles: { font: "helvetica", fontSize: 10, cellPadding: 4 },
+    columnStyles: {
+      0: { fontStyle: "bold", width: 40 },
+      1: { width: 60 },
+      2: { italic: true, textColor: [150, 150, 150] },
+    },
+  });
+
+  // --- 5. VOETNOOT ---
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  const footerNote = isQC
+    ? "GEVALIDEERD QC DOCUMENT - Uitsluitend voor interne kwaliteitsborging."
+    : "TECHNISCHE FICHE - Raadpleeg de tekening in de database voor specifieke toleranties.";
+  doc.text(footerNote, 20, 285);
+
+  // Opslaan
+  const docName = `Productfiche_${
+    product.articleCode || product.id || "Download"
+  }.pdf`;
+  doc.save(docName);
 };

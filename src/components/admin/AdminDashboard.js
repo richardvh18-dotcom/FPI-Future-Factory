@@ -4,7 +4,6 @@ import {
   Database,
   Users,
   Settings,
-  FileText,
   MessageSquare,
   Grid,
   Factory,
@@ -15,12 +14,12 @@ import { useAdminAuth } from "../../hooks/useAdminAuth";
 
 /**
  * AdminDashboard: Filtert menu-items op basis van gebruikersrol.
- * GEFIXT: Layout gecentreerd, responsive en hersteld naar de gewenste stijl.
+ * UPDATE: Bulk Upload knop verwijderd uit het hoofddashboard.
  */
 const AdminDashboard = ({ navigate, stats = {} }) => {
   const { role } = useAdminAuth();
 
-  // De volledige lijst met beheer-opties zoals gevraagd
+  // De lijst met beheer-opties zonder de Bulk Upload tegel
   const allItems = [
     {
       id: "admin_products",
@@ -71,14 +70,6 @@ const AdminDashboard = ({ navigate, stats = {} }) => {
       roles: ["admin", "engineer", "teamleader"],
     },
     {
-      id: "admin_upload",
-      title: "Bulk Upload",
-      desc: "Importeer productdata via CSV.",
-      icon: <FileText size={24} className="text-slate-600" />,
-      color: "bg-slate-50 border-slate-100",
-      roles: ["admin", "engineer"],
-    },
-    {
       id: "admin_settings",
       title: "Instellingen",
       desc: "Systeem-brede configuratie.",
@@ -110,7 +101,7 @@ const AdminDashboard = ({ navigate, stats = {} }) => {
           </p>
         </div>
 
-        {/* Grid - Altijd netjes verdeeld */}
+        {/* Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {menuItems.map((item) => (
             <button

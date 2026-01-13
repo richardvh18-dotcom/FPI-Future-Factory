@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   Clock,
   UserCheck,
+  AlertCircle,
 } from "lucide-react";
 import { useProductsData } from "../../hooks/useProductsData";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
@@ -20,9 +21,9 @@ import { doc, deleteDoc, updateDoc } from "firebase/firestore";
 
 /**
  * AdminProductManager: Beheert de productlijst en validaties.
- * GEFIXT: Gebruikt nu onAddNew prop om naar de nieuwe product weergave te gaan.
+ * Laatste update: Verhoogde stabiliteit en lege-staat afhandeling.
  */
-const AdminProductManager = ({ onBack, onAddNew }) => {
+const AdminProductManager = ({ onBack, onAddNew, onEdit }) => {
   const { products, loading } = useProductsData();
   const { user, role } = useAdminAuth();
   const [searchTerm, setSearchTerm] = useState("");
@@ -31,7 +32,6 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
 
   const canApprove = ["admin", "engineer"].includes(role);
 
-  // --- FILTER & GROEPERING ---
   const filteredData = useMemo(() => {
     if (!products) return [];
     return products.filter((p) => {
@@ -62,7 +62,6 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
       }, {});
   }, [filteredData]);
 
-  // --- ACTIES ---
   const handleApprove = async (product) => {
     if (!product?.id || !appId || !user?.uid) return;
     const currentApprovals = Array.isArray(product.approvals)
@@ -93,12 +92,13 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
         approvedAt: isFullyApproved ? new Date().toISOString() : null,
       });
     } catch (e) {
-      console.error("Validatie fout:", e);
+      console.error(e);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!id || !window.confirm("Product definitief verwijderen?")) return;
+    if (!id || !window.confirm("Product definitief verwijderen uit database?"))
+      return;
     try {
       await deleteDoc(
         doc(
@@ -112,7 +112,7 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
         )
       );
     } catch (e) {
-      console.error("Verwijderen mislukt:", e);
+      console.error(e);
     }
   };
 
@@ -124,7 +124,7 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
           <div className="flex items-center gap-4 text-left">
             <button
               onClick={onBack}
-              className="p-3 bg-slate-100 hover:bg-slate-200 rounded-2xl text-slate-400 transition-all"
+              className="p-3 bg-slate-100 hover:bg-slate-200 rounded-2xl text-slate-400 transition-all border-none"
             >
               <ArrowLeft size={20} />
             </button>
@@ -133,11 +133,10 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                 Product <span className="text-blue-600">Manager</span>
               </h2>
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
-                Gecentraliseerd Beheer
+                Database Beheer & Validatie
               </p>
             </div>
           </div>
-          {/* GEFIXT: Gebruikt nu de onAddNew prop voor navigatie */}
           <button
             onClick={onAddNew}
             className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-600 shadow-xl transition-all flex items-center gap-2"
@@ -146,9 +145,9 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
           </button>
         </div>
 
-        {/* Filters & Zoeken */}
+        {/* Filters */}
         <div className="flex flex-col md:flex-row gap-4 items-center">
-          <div className="flex bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm shrink-0">
             <button
               onClick={() => setActiveView("all")}
               className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
@@ -157,7 +156,7 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                   : "text-slate-400 hover:text-slate-600"
               }`}
             >
-              Catalogus
+              Volledige Lijst
             </button>
             <button
               onClick={() => setActiveView("pending")}
@@ -167,24 +166,24 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                   : "text-slate-400 hover:text-slate-600"
               }`}
             >
-              Wachtrij
+              Ter Validatie
             </button>
           </div>
-          <div className="relative flex-1 w-full">
+          <div className="relative flex-1 w-full text-left">
             <Search
               className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"
               size={20}
             />
             <input
               className="w-full bg-white border-2 border-slate-100 rounded-[24px] pl-14 pr-6 py-4 text-sm font-bold outline-none focus:border-blue-500 shadow-inner"
-              placeholder="Snel zoeken in de database..."
+              placeholder="Zoek op naam, artikel of ID..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
         </div>
 
-        {/* Lijst Weergave */}
+        {/* Product Lijst */}
         <div className="space-y-4 pb-20">
           {loading ? (
             <div className="py-20 text-center">
@@ -192,6 +191,22 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                 className="animate-spin inline text-blue-500"
                 size={40}
               />
+            </div>
+          ) : Object.keys(groupedProducts).length === 0 ? (
+            <div className="bg-white p-20 rounded-[40px] border-2 border-dashed border-slate-100 text-center text-slate-300">
+              <AlertCircle size={64} className="mx-auto mb-4 opacity-10" />
+              <p className="font-black uppercase tracking-widest text-sm">
+                Geen producten gevonden die voldoen aan de filters
+              </p>
+              <button
+                onClick={() => {
+                  setSearchTerm("");
+                  setActiveView("all");
+                }}
+                className="mt-4 text-blue-600 text-[10px] font-black uppercase underline"
+              >
+                Herstel filters
+              </button>
             </div>
           ) : (
             Object.entries(groupedProducts).map(([type, items]) => (
@@ -206,25 +221,32 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                   className="w-full flex items-center justify-between p-6 bg-slate-50/50 hover:bg-slate-100 transition-colors"
                 >
                   <div className="flex items-center gap-4 text-left">
-                    {expandedGroups[type] ? (
-                      <ChevronDown size={20} className="text-slate-400" />
-                    ) : (
-                      <ChevronRight size={20} className="text-slate-400" />
-                    )}
+                    <div className="p-1 bg-white rounded-lg border border-slate-200">
+                      {expandedGroups[type] ? (
+                        <ChevronDown size={18} className="text-slate-400" />
+                      ) : (
+                        <ChevronRight size={18} className="text-slate-400" />
+                      )}
+                    </div>
                     <span className="font-black text-sm uppercase tracking-widest text-slate-700">
-                      {type} ({items.length})
+                      {type}{" "}
+                      <span className="ml-2 text-[10px] bg-slate-200 text-slate-500 px-2 py-0.5 rounded-full">
+                        {items.length}
+                      </span>
                     </span>
                   </div>
                 </button>
 
                 {expandedGroups[type] && (
-                  <div className="overflow-x-auto border-t">
+                  <div className="overflow-x-auto border-t border-slate-100">
                     <table className="w-full text-left">
                       <thead className="bg-slate-50/30 border-b text-[10px] font-black text-slate-400 uppercase tracking-widest">
                         <tr>
-                          <th className="px-8 py-4">Informatie</th>
-                          <th className="px-8 py-4 text-left">Status</th>
-                          <th className="px-8 py-4 text-right">Acties</th>
+                          <th className="px-8 py-4">Product Info</th>
+                          <th className="px-8 py-4 text-left">
+                            Status / Validatie
+                          </th>
+                          <th className="px-8 py-4 text-right">Beheer</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -234,10 +256,10 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                             className="hover:bg-slate-50/50 group transition-colors"
                           >
                             <td className="px-8 py-6">
-                              <p className="text-sm font-black text-slate-800 text-left">
+                              <p className="text-sm font-black text-slate-800">
                                 {product.name}
                               </p>
-                              <p className="text-[10px] font-bold text-slate-400 font-mono italic text-left">
+                              <p className="text-[10px] font-bold text-slate-400 font-mono italic">
                                 {product.articleCode || product.id}
                               </p>
                             </td>
@@ -247,7 +269,7 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                                   <CheckCircle2 size={14} /> Gepubliceerd
                                 </div>
                               ) : (
-                                <div className="flex items-center gap-3 text-left">
+                                <div className="flex items-center gap-3">
                                   <span className="text-orange-500 text-[10px] font-black uppercase italic flex items-center gap-1.5">
                                     <Clock size={14} />{" "}
                                     {product.approvals?.length || 0}/2
@@ -258,7 +280,7 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                                         onClick={() => handleApprove(product)}
                                         className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center gap-1 shadow-md"
                                       >
-                                        <UserCheck size={12} /> Valideren
+                                        Valideren
                                       </button>
                                     )}
                                 </div>
@@ -266,12 +288,17 @@ const AdminProductManager = ({ onBack, onAddNew }) => {
                             </td>
                             <td className="px-8 py-6 text-right">
                               <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all">
+                                <button
+                                  onClick={() => onEdit?.(product)}
+                                  className="p-2 text-slate-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                                  title="Bewerken"
+                                >
                                   <Edit2 size={16} />
                                 </button>
                                 <button
                                   onClick={() => handleDelete(product.id)}
-                                  className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                  className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                  title="Verwijderen"
                                 >
                                   <Trash2 size={16} />
                                 </button>
