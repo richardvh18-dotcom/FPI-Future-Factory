@@ -8,7 +8,7 @@ import {
   Wrench,
   ArrowDownCircle,
   MessageSquare,
-  Factory, // Toegevoegd voor tab icoon
+  Factory,
 } from "lucide-react";
 import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
@@ -20,7 +20,7 @@ import Sidebar from "./components/Sidebar";
 import LoginView from "./components/LoginView";
 import ProductSearchView from "./components/products/ProductSearchView";
 import ProductDetailModal from "./components/products/ProductDetailModal";
-import PortalView from "./components/PortalView"; // NIEUW
+import PortalView from "./components/PortalView";
 
 // Hooks
 import { useAdminAuth } from "./hooks/useAdminAuth";
@@ -52,15 +52,12 @@ const DigitalPlanningHub = lazy(() =>
   import("./components/digitalplanning/DigitalPlanningHub")
 );
 const AdminDatabaseView = lazy(() =>
-  import("./components/admin/AdminDatabaseView")
+  import("./components/admin/AdminDatabaseView.jsx")
 );
 const ComposeModal = lazy(() =>
   import("./components/admin/messages/ComposeModal")
 );
 
-/**
- * Master App
- */
 const App = () => {
   const [activeTab, setActiveTab] = useState("products");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -69,12 +66,11 @@ const App = () => {
   const [loginError, setLoginError] = useState(null);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
-  const [isComposeOpen, setIsComposeOpen] = useState(false);
 
-  // NIEUW: State om te bepalen of we in de 'Portal' modus zitten
+  // FIX: Expliciet op false bij initialisatie
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [showPortal, setShowPortal] = useState(true);
 
-  // Filter State
   const [filters, setFilters] = useState({
     type: "-",
     diameter: "-",
@@ -86,7 +82,6 @@ const App = () => {
     productLabel: "-",
   });
 
-  // Data Fetching & Auth
   const {
     user,
     isAdmin: isAdminMode,
@@ -117,9 +112,8 @@ const App = () => {
             user.email.toLowerCase()
           );
           const snap = await getDoc(userRef);
-          if (snap.exists() && snap.data().tempPassword) {
+          if (snap.exists() && snap.data().tempPassword)
             setMustChangePassword(true);
-          }
         } catch (e) {
           console.error("Auth check failed:", e);
         }
@@ -128,14 +122,11 @@ const App = () => {
     checkTempPassword();
   }, [user]);
 
-  // Als de gebruiker uitlogt, reset de portal state
   useEffect(() => {
-    if (!user) {
-      setShowPortal(true);
-    }
+    if (!user) setShowPortal(true);
   }, [user]);
 
-  const handlePasswordChanged = async () => {
+  const handlePasswordChanged = async (pwd) => {
     if (!user) return;
     const userRef = doc(
       db,
@@ -222,20 +213,13 @@ const App = () => {
     }
   };
 
-  const goToDashboard = () => {
-    setEditingProduct(null);
-    setActiveTab("admin_dashboard");
-  };
-
-  // --- RENDER LOGICA ---
   if (authLoading)
     return (
       <div className="flex h-screen items-center justify-center bg-slate-900">
         <Loader2 className="animate-spin text-emerald-500" size={48} />
       </div>
     );
-
-  if (!user || user.isAnonymous || mustChangePassword) {
+  if (!user || user.isAnonymous || mustChangePassword)
     return (
       <LoginView
         onLogin={handleLogin}
@@ -244,17 +228,15 @@ const App = () => {
         onPasswordChanged={handlePasswordChanged}
       />
     );
-  }
 
-  // NIEUW: Toon Portal View als er nog geen keuze is gemaakt
   if (showPortal) {
     return (
       <PortalView
         user={user}
         onLogout={() => signOut(auth)}
-        onSelect={(module) => {
-          if (module === "catalog") setActiveTab("products");
-          if (module === "planning") setActiveTab("admin_digital_planning");
+        onSelect={(m) => {
+          if (m === "catalog") setActiveTab("products");
+          if (m === "planning") setActiveTab("admin_digital_planning");
           setShowPortal(false);
         }}
       />
@@ -262,12 +244,12 @@ const App = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 font-sans overflow-hidden text-left">
+    <div className="flex flex-col h-screen bg-slate-50 font-sans overflow-hidden text-left relative">
       <Header
         user={user}
         isAdminMode={isAdminMode}
         onLogout={() => {
-          setShowPortal(true); // Terug naar portal bij uitloggen (of login scherm)
+          setShowPortal(true);
           signOut(auth);
         }}
         searchQuery={searchQuery}
@@ -280,11 +262,9 @@ const App = () => {
         onNewMessage={() => setIsComposeOpen(true)}
       />
 
-      {/* Hoofdnavigatie Tabs */}
       <div className="bg-white border-b px-6 pt-2 flex gap-4 shadow-sm z-10 overflow-x-auto no-scrollbar shrink-0 text-left">
         {[
           { id: "products", label: "Catalogus", icon: <Package size={14} /> },
-          // NIEUW: Planning direct toegankelijk maken in tabs voor iedereen
           {
             id: "admin_digital_planning",
             label: "Planning",
@@ -319,12 +299,14 @@ const App = () => {
             {t.icon} {t.label}
           </button>
         ))}
-
         {isAdminMode && (
           <>
             <div className="h-6 w-px bg-slate-200 mx-2 shrink-0 self-center mb-2"></div>
             <button
-              onClick={goToDashboard}
+              onClick={() => {
+                setEditingProduct(null);
+                setActiveTab("admin_dashboard");
+              }}
               className={`pb-3 text-[10px] font-black uppercase tracking-widest border-b-2 flex items-center gap-2 shrink-0 transition-all ${
                 activeTab.startsWith("admin_") &&
                 activeTab !== "admin_digital_planning"
@@ -338,7 +320,6 @@ const App = () => {
         )}
       </div>
 
-      {/* Content Area */}
       <main className="flex-1 flex overflow-hidden relative">
         <Suspense
           fallback={
@@ -388,16 +369,20 @@ const App = () => {
           {activeTab === "ai" && (
             <AiAssistantView products={products} currentSearch={searchQuery} />
           )}
+
           {(activeTab === "messages" || activeTab === "admin_messages") && (
-            <MessagesManager onBack={() => setActiveTab("products")} />
+            <MessagesManager
+              onBack={() => setActiveTab("products")}
+              onCompose={() => setIsComposeOpen(true)} // Geef compose trigger door
+            />
           )}
-          {/* --- ADMIN HUB ROUTING --- */}
+
           {activeTab === "admin_dashboard" && (
             <AdminDashboard navigate={setActiveTab} />
           )}
           {activeTab === "admin_products" && (
             <AdminProductManager
-              onBack={goToDashboard}
+              onBack={() => setActiveTab("admin_dashboard")}
               onAddNew={() => {
                 setEditingProduct(null);
                 setActiveTab("admin_new_product");
@@ -415,11 +400,13 @@ const App = () => {
             />
           )}
           {activeTab === "admin_locations" && (
-            <AdminLocationsView onBack={goToDashboard} />
+            <AdminLocationsView
+              onBack={() => setActiveTab("admin_dashboard")}
+            />
           )}
           {activeTab === "admin_matrix" && (
             <AdminMatrixManager
-              onBack={goToDashboard}
+              onBack={() => setActiveTab("admin_dashboard")}
               productTemplates={productTemplates}
               productRange={productRange}
               generalConfig={generalConfig}
@@ -427,18 +414,16 @@ const App = () => {
           )}
           {activeTab === "admin_digital_planning" && (
             <DigitalPlanningHub onBack={() => setShowPortal(true)} />
-          )}{" "}
-          {/* Terug naar portal */}
+          )}
           {activeTab === "admin_database" && (
-            <AdminDatabaseView onBack={goToDashboard} />
+            <AdminDatabaseView onBack={() => setActiveTab("admin_dashboard")} />
           )}
           {activeTab === "admin_users" && (
-            <AdminUsersView onBack={goToDashboard} />
+            <AdminUsersView onBack={() => setActiveTab("admin_dashboard")} />
           )}
         </Suspense>
       </main>
 
-      {/* Modals */}
       {viewingProduct && (
         <ProductDetailModal
           product={viewingProduct}
@@ -446,6 +431,8 @@ const App = () => {
           userRole={role}
         />
       )}
+
+      {/* GLOBALE COMPOSE MODAL */}
       <Suspense fallback={null}>
         <ComposeModal
           isOpen={isComposeOpen}

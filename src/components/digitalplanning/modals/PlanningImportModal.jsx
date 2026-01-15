@@ -1,265 +1,486 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
-  X,
-  FileSpreadsheet,
-  Clipboard,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  Save,
-  Info,
   Upload,
+  FileSpreadsheet,
+  CheckCircle,
+  AlertTriangle,
+  Loader2,
+  X,
+  ArrowRight,
+  Database,
+  Eye,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
+import {
+  writeBatch,
+  doc,
+  collection,
+  serverTimestamp,
+} from "firebase/firestore";
+import { db } from "../../../config/firebase";
 
-/**
- * PlanningImportModal: Geoptimaliseerd voor Infor-LN vPlan (Kolom D t/m Q).
- * Lost de sorteerfout bij machines op door alleen de voorloop '40' te strippen.
- */
-const PlanningImportModal = ({ isOpen, onClose, onImport, loading }) => {
-  const [importMode, setImportMode] = useState("upload");
-  const [pasteData, setPasteData] = useState("");
-  const [preview, setPreview] = useState([]);
-  const [error, setError] = useState(null);
+// Helper om App ID op te halen
+const getAppId = () => {
+  if (typeof window !== "undefined" && window.__app_id) return window.__app_id;
+  return "fittings-app-v1";
+};
 
-  // Pre-load SheetJS
-  useEffect(() => {
-    if (isOpen && !window.XLSX) {
-      const script = document.createElement("script");
-      script.src =
-        "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-      script.async = true;
-      document.head.appendChild(script);
-    }
-  }, [isOpen]);
+// --- CDN LOADER VOOR XLSX (Magic Fix voor CodeSandbox) ---
+// Dit laadt de bibliotheek pas in als het nodig is, zonder installatie.
+const loadXLSX = async () => {
+  if (window.XLSX) return window.XLSX; // Al geladen?
 
-  const processRawRows = (rows) => {
-    try {
-      const parsedOrders = [];
-      let headerFound = false;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src =
+      "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () =>
+      reject(new Error("Kon Excel bibliotheek niet laden."));
+    document.head.appendChild(script);
+  });
+};
 
-      rows.forEach((row) => {
-        // Kolom G (index 6) is het Ordernummer
-        const orderId = String(row[6] || "").trim();
+// --- INTERNE CSV PARSER ---
+const parseCSV = (text) => {
+  const rows = [];
+  let currentRow = [];
+  let currentField = "";
+  let inQuotes = false;
 
-        // Zoek de header rij om te starten
-        if (!headerFound) {
-          if (
-            orderId.toLowerCase() === "order" ||
-            orderId.toLowerCase() === "ordernummer"
-          ) {
-            headerFound = true;
-          }
-          return;
-        }
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
 
-        // Sla lege rijen of metadata over
-        if (!orderId || orderId === "0" || orderId.length < 5) return;
-
-        // --- VEILIGE MACHINE PARSING ---
-        // Kolom D (index 3) bevat de machine (bv 40BH11)
-        let rawMachine = String(row[3] || "").trim();
-        let cleanMachine = rawMachine;
-        // Alleen de EERSTE '40' weghalen als het een prefix is
-        if (rawMachine.startsWith("40")) {
-          cleanMachine = rawMachine.substring(2);
-        }
-
-        // Mapping conform Infor-LN snippet (D t/m Q)
-        parsedOrders.push({
-          machine: cleanMachine, // D (Index 3)
-          date: String(row[4] || "").trim(), // E (Index 4)
-          week: parseInt(row[5]) || 0, // F (Index 5)
-          orderId: orderId.toUpperCase(), // G (Index 6)
-          poText: String(row[7] || "").trim(), // H (Index 7)
-          project: String(row[8] || "").trim(), // I (Index 8)
-          projectDesc: String(row[9] || "").trim(), // J (Index 9)
-          articleCode: String(row[10] || "").trim(), // K (Index 10)
-          item: String(row[11] || "").trim(), // L (Index 11)
-          extraCode: String(row[12] || "").trim(), // M (Index 12)
-          drawing: String(row[13] || "").trim(), // N (Index 13)
-          plan: parseInt(row[14]) || 0, // O (Index 14)
-          toDo: parseInt(row[15]) || 0, // P (Index 15)
-          finish: parseInt(row[16]) || 0, // Q (Index 16)
-          status: "GEPLAND",
-          updatedAt: new Date().toISOString(),
-        });
-      });
-
-      if (parsedOrders.length === 0) {
-        setError("Geen geldige data gevonden in kolom G (Order).");
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        currentField += '"';
+        i++;
       } else {
-        setPreview(parsedOrders);
+        inQuotes = !inQuotes;
       }
-    } catch (err) {
-      setError("Fout bij het verwerken van het bestand.");
+    } else if (char === "," && !inQuotes) {
+      currentRow.push(currentField);
+      currentField = "";
+    } else if ((char === "\r" || char === "\n") && !inQuotes) {
+      if (char === "\r" && nextChar === "\n") i++;
+      currentRow.push(currentField);
+      rows.push(currentRow);
+      currentRow = [];
+      currentField = "";
+    } else {
+      currentField += char;
     }
-  };
+  }
+  if (currentField || currentRow.length > 0) {
+    currentRow.push(currentField);
+    rows.push(currentRow);
+  }
+  return rows;
+};
 
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setError(null);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = new Uint8Array(event.target.result);
-        const workbook = window.XLSX.read(data, { type: "array" });
-        const rows = window.XLSX.utils.sheet_to_json(
-          workbook.Sheets[workbook.SheetNames[0]],
-          { header: 1 }
-        );
-        processRawRows(rows);
-      } catch (err) {
-        setError("Excel bestand onleesbaar.");
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  };
+// --- HELPER: Excel Datum naar JS Date ---
+const excelDateToJSDate = (serial) => {
+  if (!serial) return new Date();
+  if (typeof serial === "string") return new Date(serial);
+  const utc_days = Math.floor(serial - 25569);
+  const utc_value = utc_days * 86400;
+  const date_info = new Date(utc_value * 1000);
+  return date_info;
+};
 
-  const handlePasteParse = () => {
-    if (!pasteData.trim()) return;
-    const rows = pasteData
-      .trim()
-      .split("\n")
-      .map((r) => r.split("\t"));
-    processRawRows(rows);
-  };
+const PlanningImportModal = ({ isOpen, onClose, onSuccess }) => {
+  const [file, setFile] = useState(null);
+  const [previewData, setPreviewData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [step, setStep] = useState(1);
+  const [stats, setStats] = useState({ total: 0, pipes: 0, fittings: 0 });
+  const [showPreviewTable, setShowPreviewTable] = useState(false);
 
   if (!isOpen) return null;
 
+  const handleFileChange = (e) => {
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+
+      const fileType = selectedFile.name.split(".").pop().toLowerCase();
+
+      if (fileType === "csv") {
+        processCSVFile(selectedFile);
+      } else if (fileType === "xls" || fileType === "xlsx") {
+        processExcelFile(selectedFile);
+      } else {
+        setError("Niet ondersteund bestandstype. Gebruik .csv, .xls of .xlsx");
+      }
+    }
+  };
+
+  // --- CSV VERWERKING ---
+  const processCSVFile = (file) => {
+    setLoading(true);
+    setError(null);
+    setShowPreviewTable(false);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target.result;
+        const rows = parseCSV(text);
+        processRows(rows, "csv");
+      } catch (err) {
+        console.error(err);
+        setError("Fout bij verwerken CSV: " + err.message);
+        setLoading(false);
+      }
+    };
+    reader.onerror = () => {
+      setError("Kon bestand niet lezen.");
+      setLoading(false);
+    };
+    reader.readAsText(file);
+  };
+
+  // --- EXCEL VERWERKING (VIA CDN) ---
+  const processExcelFile = async (file) => {
+    setLoading(true);
+    setError(null);
+    setShowPreviewTable(false);
+
+    try {
+      // Laad de bibliotheek dynamisch
+      const XLSX = await loadXLSX();
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: "array" });
+
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+
+          // Converteer naar Array van Arrays
+          const rows = XLSX.utils.sheet_to_json(worksheet, {
+            header: 1,
+            defval: "",
+          });
+
+          processRows(rows, "excel");
+        } catch (err) {
+          console.error(err);
+          setError("Fout bij lezen Excel data: " + err.message);
+          setLoading(false);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } catch (err) {
+      console.error(err);
+      setError("Kon Excel lezer niet laden. Controleer je internetverbinding.");
+      setLoading(false);
+    }
+  };
+
+  // --- CENTRALE RIJ VERWERKING ---
+  const processRows = (rows, type) => {
+    try {
+      // Validatie: Minimaal 8 regels (6 rommel + 1 header + data)
+      if (rows.length < 8) {
+        throw new Error("Bestand bevat geen geldige data (te weinig regels).");
+      }
+
+      const parsedOrders = [];
+      let pipeCount = 0;
+      let fitCount = 0;
+
+      // Loop door data (vanaf index 7)
+      for (let i = 7; i < rows.length; i++) {
+        const row = rows[i];
+
+        // Kolom 6 = Order Nummer (N200xxxx), skip als leeg
+        if (!row[6] || !String(row[6]).startsWith("N")) continue;
+
+        // Machine opschonen: 40BH16 -> BH16 (Kolom 3)
+        let machineRaw = String(row[3] || "");
+        let machineClean = machineRaw.replace(/^40/, "");
+
+        // Datum Formatteren (Kolom 4)
+        let dateObj = new Date();
+        if (type === "excel" && typeof row[4] === "number") {
+          dateObj = excelDateToJSDate(row[4]);
+        } else {
+          let dateStr = row[4];
+          dateObj = new Date(dateStr);
+          if (isNaN(dateObj.getTime())) dateObj = new Date();
+        }
+
+        // Item Info (Kolom 11)
+        const itemDesc = String(row[11] || "Onbekend Item");
+        const isPipe =
+          itemDesc.toUpperCase().includes("PIPE") ||
+          itemDesc.toUpperCase().includes("BUIS");
+
+        // Aantallen (Kolom 14)
+        const planVal = parseFloat(row[14] || 0);
+
+        if (isPipe) pipeCount++;
+        else fitCount++;
+
+        parsedOrders.push({
+          machine: machineClean, // Kolom 3
+          plannedDate: dateObj, // Kolom 4
+          weekNumber: parseInt(row[5]) || 0, // Kolom 5
+          orderId: row[6], // Kolom 6
+          poText: String(row[7] || ""), // Kolom 7
+          project: String(row[8] || ""), // Kolom 8
+          projectDesc: String(row[9] || ""), // Kolom 9
+          itemCode: row[10], // Kolom 10
+          item: itemDesc, // Kolom 11
+          drawing: String(row[13] || ""), // Kolom 13
+          plan: planVal, // Kolom 14
+          status: "pending",
+          importDate: new Date(),
+          isPipe: isPipe,
+        });
+      }
+
+      setPreviewData(parsedOrders);
+      setStats({
+        total: parsedOrders.length,
+        pipes: pipeCount,
+        fittings: fitCount,
+      });
+      setStep(2);
+      setLoading(false);
+    } catch (err) {
+      setError("Data verwerkingsfout: " + err.message);
+      setLoading(false);
+    }
+  };
+
+  const handleImport = async () => {
+    setLoading(true);
+    const appId = getAppId();
+    const batchSize = 400;
+
+    try {
+      let batch = writeBatch(db);
+      let count = 0;
+      let batchCount = 0;
+
+      for (const order of previewData) {
+        const docId = `${order.orderId}_${
+          order.itemCode || Math.random().toString(36).substr(2, 5)
+        }`;
+        const docRef = doc(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          "digital_planning",
+          docId
+        );
+
+        const firestoreData = {
+          ...order,
+          plannedDate: serverTimestamp(),
+          importDate: serverTimestamp(),
+        };
+
+        batch.set(docRef, firestoreData);
+        count++;
+
+        if (count >= batchSize) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+          batchCount++;
+          console.log(`Batch ${batchCount} opgeslagen`);
+        }
+      }
+
+      if (count > 0) {
+        await batch.commit();
+      }
+
+      if (onSuccess) onSuccess();
+      onClose();
+    } catch (err) {
+      console.error("Firebase Fout:", err);
+      setError("Opslaan mislukt: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[300] flex items-center justify-center p-4 lg:p-10 animate-in fade-in">
-      <div className="bg-white w-full max-w-6xl rounded-[50px] shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[95vh] text-left">
-        <div className="p-8 bg-blue-600 text-white flex justify-between items-center shrink-0">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-white/20 rounded-2xl shadow-inner">
-              <FileSpreadsheet size={24} />
-            </div>
-            <h3 className="text-2xl font-black italic uppercase tracking-tight">
-              Excel <span className="text-blue-200">Import</span>
-            </h3>
+    <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+      <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+          <div>
+            <h2 className="text-xl font-black text-slate-800 uppercase italic tracking-tight">
+              Planning Import
+            </h2>
+            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+              Infor-LN Export (CSV / XLS / XLSX)
+            </p>
           </div>
           <button
             onClick={onClose}
-            className="p-3 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all"
+            className="p-2 hover:bg-slate-200 rounded-full transition-colors"
           >
-            <X size={24} />
+            <X className="w-6 h-6 text-slate-400" />
           </button>
         </div>
 
-        <div className="flex bg-slate-100 p-1 mx-8 mt-6 rounded-2xl w-fit">
-          <button
-            onClick={() => setImportMode("upload")}
-            className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-              importMode === "upload"
-                ? "bg-white text-blue-600 shadow-sm"
-                : "text-slate-400"
-            }`}
-          >
-            Bestand Selecteren
-          </button>
-          <button
-            onClick={() => setImportMode("paste")}
-            className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-              importMode === "paste"
-                ? "bg-white text-blue-600 shadow-sm"
-                : "text-slate-400"
-            }`}
-          >
-            Cellen Plakken
-          </button>
-        </div>
+        {/* Content (Scrollable) */}
+        <div className="p-8 overflow-y-auto">
+          {error && (
+            <div className="mb-6 bg-red-50 text-red-600 p-4 rounded-xl border border-red-100 flex items-center gap-3">
+              <AlertTriangle />
+              <span className="font-bold text-sm">{error}</span>
+            </div>
+          )}
 
-        <div className="flex-1 overflow-hidden flex flex-col lg:flex-row p-8 gap-8">
-          <div className="w-full lg:w-1/3 flex flex-col gap-6">
-            {importMode === "upload" ? (
-              <div className="border-4 border-dashed border-slate-100 rounded-[40px] bg-slate-50/50 flex-1 flex flex-col items-center justify-center p-10 text-center relative group hover:border-blue-400 transition-all">
-                <input
-                  type="file"
-                  accept=".xlsx, .xls, .csv"
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                  onChange={handleFileChange}
-                />
-                <div className="p-6 bg-white text-blue-600 rounded-3xl mb-4 shadow-sm group-hover:scale-110 transition-transform">
-                  <Upload size={48} />
-                </div>
-                <p className="text-lg font-black text-slate-800 uppercase italic">
-                  Kies Bestand
-                </p>
-              </div>
-            ) : (
-              <textarea
-                className="flex-1 w-full bg-slate-50 border-2 border-slate-100 rounded-[30px] p-6 text-[10px] font-mono focus:border-blue-500 outline-none resize-none shadow-inner"
-                placeholder="Plak hier je Excel rijen..."
-                value={pasteData}
-                onChange={(e) => setPasteData(e.target.value)}
-                onBlur={handlePasteParse}
+          {step === 1 ? (
+            <div className="border-4 border-dashed border-slate-200 rounded-3xl p-10 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors relative cursor-pointer h-64">
+              <input
+                type="file"
+                accept=".csv, .xls, .xlsx"
+                onChange={handleFileChange}
+                className="absolute inset-0 opacity-0 cursor-pointer"
               />
-            )}
-          </div>
-
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto border-2 border-slate-50 rounded-[35px] bg-white custom-scrollbar shadow-inner">
-              {preview.length > 0 ? (
-                <table className="w-full text-[10px] text-left">
-                  <thead className="sticky top-0 bg-white border-b z-10">
-                    <tr className="font-black uppercase text-slate-400">
-                      <th className="p-4">Machine</th>
-                      <th className="p-4">Order</th>
-                      <th className="p-4">Omschrijving</th>
-                      <th className="p-4 text-right">Plan</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {preview.map((p, i) => (
-                      <tr
-                        key={i}
-                        className="hover:bg-blue-50/30 transition-colors"
-                      >
-                        <td className="p-4 font-black text-blue-600 uppercase">
-                          {p.machine}
-                        </td>
-                        <td className="p-4 font-mono font-bold">{p.orderId}</td>
-                        <td className="p-4 font-bold text-slate-700 truncate max-w-[200px]">
-                          {p.item}
-                        </td>
-                        <td className="p-4 text-right font-black">{p.plan}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center opacity-20">
-                  <FileSpreadsheet size={80} />
-                  <p className="text-xs font-black uppercase mt-4">
-                    Geen data geladen
+              <div className="bg-blue-50 p-6 rounded-full mb-4 text-blue-600">
+                <Upload size={32} />
+              </div>
+              <h3 className="text-lg font-black text-slate-700 mb-2">
+                Sleep bestand of Klik
+              </h3>
+              <p className="text-sm text-slate-400 font-medium">
+                Ondersteunt: Excel & CSV (start op regel 7)
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="bg-emerald-50 border border-emerald-100 p-6 rounded-2xl flex items-center gap-4">
+                <CheckCircle className="text-emerald-600 w-10 h-10" />
+                <div>
+                  <h4 className="font-black text-emerald-800 text-lg">
+                    Analyse Voltooid
+                  </h4>
+                  <p className="text-emerald-600 text-sm font-medium">
+                    {stats.total} orders gevonden
                   </p>
                 </div>
-              )}
-            </div>
-            {error && (
-              <div className="mt-4 p-4 bg-red-50 text-red-600 rounded-2xl text-[10px] font-black uppercase flex items-center gap-2">
-                <AlertCircle size={16} /> {error}
               </div>
-            )}
-          </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                    Fittings
+                  </span>
+                  <p className="text-2xl font-black text-slate-800">
+                    {stats.fittings}
+                  </p>
+                </div>
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                    Pipes
+                  </span>
+                  <p className="text-2xl font-black text-slate-800">
+                    {stats.pipes}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-100">
+                <p className="text-xs text-yellow-800 font-bold flex items-center gap-2">
+                  <Database size={14} />
+                  Data wordt toegevoegd aan de live planning.
+                </p>
+              </div>
+
+              {/* Preview / Controle Toggle */}
+              <div>
+                <button
+                  onClick={() => setShowPreviewTable(!showPreviewTable)}
+                  className="w-full flex items-center justify-between p-4 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors font-bold text-slate-600 text-sm"
+                >
+                  <span className="flex items-center gap-2">
+                    <Eye size={16} /> Bekijk Voorbeeld (Eerste 5)
+                  </span>
+                  {showPreviewTable ? (
+                    <ChevronUp size={16} />
+                  ) : (
+                    <ChevronDown size={16} />
+                  )}
+                </button>
+
+                {showPreviewTable && (
+                  <div className="mt-2 border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 uppercase font-black">
+                        <tr>
+                          <th className="p-3">Order</th>
+                          <th className="p-3">Machine</th>
+                          <th className="p-3">Item</th>
+                          <th className="p-3 text-right">Plan</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {previewData.slice(0, 5).map((row, i) => (
+                          <tr key={i} className="hover:bg-blue-50/50">
+                            <td className="p-3 font-mono font-bold text-blue-600">
+                              {row.orderId}
+                            </td>
+                            <td className="p-3 font-bold text-slate-700">
+                              {row.machine}
+                            </td>
+                            <td
+                              className="p-3 text-slate-600 truncate max-w-[200px]"
+                              title={row.item}
+                            >
+                              {row.item}
+                            </td>
+                            <td className="p-3 font-bold text-right">
+                              {row.plan}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div className="p-2 bg-slate-50 text-center text-[10px] text-slate-400 italic">
+                      ... en nog {stats.total - 5} regels
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="p-8 bg-slate-50 border-t flex justify-between items-center shrink-0">
-          <p className="text-[10px] font-bold text-slate-400 uppercase italic">
-            Controleren: Machine-kolom (D) en Order-kolom (G)
-          </p>
+        {/* Footer */}
+        <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3 shrink-0">
           <button
-            disabled={preview.length === 0 || loading}
-            onClick={() => onImport(preview)}
-            className="px-12 py-4 bg-blue-600 text-white rounded-[24px] font-black text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl disabled:opacity-50"
+            onClick={onClose}
+            className="px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-200 transition-colors text-sm"
           >
-            {loading ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              `Importeer ${preview.length} Orders`
-            )}
+            Annuleren
           </button>
+          {step === 2 && (
+            <button
+              onClick={handleImport}
+              disabled={loading}
+              className="px-8 py-3 rounded-xl font-black text-white bg-blue-600 hover:bg-blue-700 transition-colors text-sm uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-blue-200 disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="animate-spin" /> : <ArrowRight />}
+              Bevestig Import
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -1,189 +1,190 @@
-import React, { useState, useEffect } from "react";
-import {
-  X,
-  Send,
-  User,
-  Users,
-  ChevronDown,
-  Loader2,
-  MessageSquare,
-  AlertCircle,
-} from "lucide-react";
-import { collection, getDocs } from "firebase/firestore";
+import React, { useState } from "react";
+import { X, Send, Loader2, AlertCircle } from "lucide-react";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db, appId } from "../../../config/firebase";
 
-const ComposeModal = ({ onClose, onSend, currentUserEmail }) => {
-  const [recipient, setRecipient] = useState("");
-  const [subject, setSubject] = useState("");
-  const [content, setContent] = useState("");
-  const [availableUsers, setAvailableUsers] = useState([]);
-  const [loadingUsers, setLoadingUsers] = useState(true);
-  const [isSending, setIsSending] = useState(false);
+const ComposeModal = ({ isOpen, onClose }) => {
+  const [formData, setFormData] = useState({
+    to: "admin",
+    subject: "",
+    content: "",
+    priority: "normal",
+  });
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    const fetchRecipients = async () => {
-      try {
-        const querySnapshot = await getDocs(
-          collection(db, "artifacts", appId, "public", "data", "user_roles")
-        );
-        const userList = querySnapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() }))
-          // Filter huidige gebruiker uit de lijst (case insensitive)
-          .filter(
-            (u) =>
-              (u.email || "").toLowerCase() !==
-              (currentUserEmail || "").toLowerCase()
-          );
-
-        setAvailableUsers(userList);
-      } catch (error) {
-        console.error("Fout bij laden ontvangers:", error);
-      } finally {
-        setLoadingUsers(false);
-      }
-    };
-    fetchRecipients();
-  }, [currentUserEmail]);
+  // FIX: Geen render als gesloten
+  if (!isOpen) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.subject || !formData.content) {
+      setError("Vul alle verplichte velden in.");
+      return;
+    }
+
+    setSending(true);
     setError(null);
 
-    if (!recipient) return setError("Selecteer een ontvanger.");
-    if (!subject.trim()) return setError("Vul een onderwerp in.");
-    if (!content.trim()) return setError("Typ een bericht.");
-    if (isSending) return;
-
-    setIsSending(true);
     try {
-      // Forceer lowercase bij verzenden voor consistentie
-      await onSend({
-        to: recipient.toLowerCase(),
-        subject: subject.trim(),
-        content: content.trim(),
-        from: currentUserEmail.toLowerCase(),
-        read: false,
-        type: recipient === "all" ? "broadcast" : "private",
-      });
+      if (!appId) throw new Error("Geen App ID gevonden");
 
+      await addDoc(
+        collection(db, "artifacts", appId, "public", "data", "messages"),
+        {
+          ...formData,
+          sender: "Systeem",
+          senderName: "Gebruiker",
+          timestamp: serverTimestamp(),
+          read: false,
+          type: "user_message",
+        }
+      );
+
+      // Succes: reset en sluit
+      setFormData({
+        to: "admin",
+        subject: "",
+        content: "",
+        priority: "normal",
+      });
       onClose();
     } catch (err) {
-      setError("Verzenden mislukt. Probeer het opnieuw.");
+      console.error("Fout bij versturen:", err);
+      setError("Kon bericht niet versturen. Controleer verbinding.");
     } finally {
-      setIsSending(false);
+      setSending(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-in fade-in duration-300">
-      <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]">
-        <div className="bg-slate-900 p-6 flex justify-between items-center text-white">
-          <div className="flex items-center gap-4">
-            <div className="bg-emerald-500 p-2.5 rounded-2xl text-slate-900">
-              <MessageSquare size={20} />
-            </div>
-            <h2 className="text-lg font-black uppercase italic">
-              Nieuw Bericht
-            </h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-white/10 rounded-xl transition-colors"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        {error && (
-          <div className="bg-red-50 p-3 text-red-600 text-xs font-bold flex items-center gap-2 border-b border-red-100">
-            <AlertCircle size={14} />
-            {error}
-          </div>
-        )}
-
-        <form
-          onSubmit={handleSubmit}
-          className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar"
-        >
-          <div className="space-y-2">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">
-              Ontvanger
-            </label>
-            <div className="relative">
-              <select
-                className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-12 py-4 text-sm font-bold text-slate-700 outline-none focus:border-emerald-500 appearance-none"
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-                required
-              >
-                <option value="">- Kies een collega -</option>
-                <option
-                  value="all"
-                  className="text-emerald-600 font-black italic"
-                >
-                  📢 IEDEREEN (Broadcast)
-                </option>
-                {availableUsers.map((u) => (
-                  <option key={u.id} value={u.email}>
-                    {u.name || u.email} ({u.role})
-                  </option>
-                ))}
-              </select>
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
-                {recipient === "all" ? <Users size={20} /> : <User size={20} />}
-              </div>
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-                <ChevronDown size={18} />
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">
-              Onderwerp
-            </label>
-            <input
-              className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-emerald-500"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              required
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">
-              Bericht
-            </label>
-            <textarea
-              className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl px-6 py-4 text-sm font-medium outline-none focus:border-emerald-500 min-h-[160px] resize-none"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              required
-            />
-          </div>
-        </form>
-
-        <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+    // Backdrop met hogere z-index en klik-om-te-sluiten
+    <div
+      className="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden border border-slate-100 scale-100 animate-in zoom-in-95 duration-200"
+        onClick={(e) => e.stopPropagation()} // Voorkom sluiten bij klik binnen modal
+      >
+        {/* Header */}
+        <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+          <h3 className="font-black text-slate-800 uppercase italic tracking-tight">
+            Nieuw Bericht
+          </h3>
           <button
             type="button"
             onClick={onClose}
-            className="px-6 py-4 text-[10px] font-black uppercase text-slate-400"
+            className="p-2 hover:bg-slate-200 rounded-full transition-colors group"
+            aria-label="Sluiten"
           >
-            Annuleren
+            <X
+              size={20}
+              className="text-slate-500 group-hover:text-slate-700"
+            />
           </button>
-          <button
-            type="submit"
-            disabled={isSending}
-            className="bg-slate-900 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest flex items-center gap-3 hover:bg-emerald-600 disabled:opacity-50 transition-all"
-          >
-            {isSending ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              <Send size={18} />
-            )}
-            Bericht Verzenden
-          </button>
+        </div>
+
+        {/* Form */}
+        <div className="p-6">
+          {error && (
+            <div className="mb-4 bg-red-50 text-red-600 p-3 rounded-xl text-xs font-bold flex items-center gap-2 border border-red-100">
+              <AlertCircle size={16} /> {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                Onderwerp
+              </label>
+              <input
+                type="text"
+                required
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="Waar gaat het over?"
+                value={formData.subject}
+                onChange={(e) =>
+                  setFormData({ ...formData, subject: e.target.value })
+                }
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                  Aan
+                </label>
+                <select
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:outline-none focus:border-blue-500"
+                  value={formData.to}
+                  onChange={(e) =>
+                    setFormData({ ...formData, to: e.target.value })
+                  }
+                >
+                  <option value="admin">Administrators</option>
+                  <option value="maintenance">Technische Dienst</option>
+                  <option value="logistics">Logistiek</option>
+                  <option value="quality">Kwaliteit (QC)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                  Prioriteit
+                </label>
+                <select
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:outline-none focus:border-blue-500"
+                  value={formData.priority}
+                  onChange={(e) =>
+                    setFormData({ ...formData, priority: e.target.value })
+                  }
+                >
+                  <option value="normal">Normaal</option>
+                  <option value="high">Hoog</option>
+                  <option value="urgent">Spoed</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                Bericht
+              </label>
+              <textarea
+                required
+                rows={4}
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:border-blue-500 transition-colors resize-none"
+                placeholder="Typ hier je bericht..."
+                value={formData.content}
+                onChange={(e) =>
+                  setFormData({ ...formData, content: e.target.value })
+                }
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-100 transition-colors text-sm"
+              >
+                Annuleren
+              </button>
+              <button
+                type="submit"
+                disabled={sending}
+                className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold text-sm uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 disabled:opacity-50 flex items-center gap-2"
+              >
+                {sending ? (
+                  <Loader2 className="animate-spin" size={18} />
+                ) : (
+                  <>
+                    <Send size={18} /> Versturen
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
