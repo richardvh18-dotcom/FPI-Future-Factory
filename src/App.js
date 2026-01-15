@@ -8,6 +8,7 @@ import {
   Wrench,
   ArrowDownCircle,
   MessageSquare,
+  Factory, // Toegevoegd voor tab icoon
 } from "lucide-react";
 import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
@@ -19,6 +20,7 @@ import Sidebar from "./components/Sidebar";
 import LoginView from "./components/LoginView";
 import ProductSearchView from "./components/products/ProductSearchView";
 import ProductDetailModal from "./components/products/ProductDetailModal";
+import PortalView from "./components/PortalView"; // NIEUW
 
 // Hooks
 import { useAdminAuth } from "./hooks/useAdminAuth";
@@ -26,7 +28,7 @@ import { useProductsData } from "./hooks/useProductsData";
 import { useSettingsData } from "./hooks/useSettingsData";
 import { useMessages } from "./hooks/useMessages";
 
-// Lazy Loading
+// Lazy Loading Modules
 const AdminDashboard = lazy(() => import("./components/admin/AdminDashboard"));
 const AdminUsersView = lazy(() => import("./components/admin/AdminUsersView"));
 const AdminLocationsView = lazy(() =>
@@ -49,7 +51,16 @@ const AdminNewProductView = lazy(() =>
 const DigitalPlanningHub = lazy(() =>
   import("./components/digitalplanning/DigitalPlanningHub")
 );
+const AdminDatabaseView = lazy(() =>
+  import("./components/admin/AdminDatabaseView")
+);
+const ComposeModal = lazy(() =>
+  import("./components/admin/messages/ComposeModal")
+);
 
+/**
+ * Master App
+ */
 const App = () => {
   const [activeTab, setActiveTab] = useState("products");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -58,7 +69,12 @@ const App = () => {
   const [loginError, setLoginError] = useState(null);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
 
+  // NIEUW: State om te bepalen of we in de 'Portal' modus zitten
+  const [showPortal, setShowPortal] = useState(true);
+
+  // Filter State
   const [filters, setFilters] = useState({
     type: "-",
     diameter: "-",
@@ -70,6 +86,7 @@ const App = () => {
     productLabel: "-",
   });
 
+  // Data Fetching & Auth
   const {
     user,
     isAdmin: isAdminMode,
@@ -104,11 +121,18 @@ const App = () => {
             setMustChangePassword(true);
           }
         } catch (e) {
-          console.error(e);
+          console.error("Auth check failed:", e);
         }
       }
     };
     checkTempPassword();
+  }, [user]);
+
+  // Als de gebruiker uitlogt, reset de portal state
+  useEffect(() => {
+    if (!user) {
+      setShowPortal(true);
+    }
   }, [user]);
 
   const handlePasswordChanged = async () => {
@@ -198,6 +222,12 @@ const App = () => {
     }
   };
 
+  const goToDashboard = () => {
+    setEditingProduct(null);
+    setActiveTab("admin_dashboard");
+  };
+
+  // --- RENDER LOGICA ---
   if (authLoading)
     return (
       <div className="flex h-screen items-center justify-center bg-slate-900">
@@ -216,14 +246,30 @@ const App = () => {
     );
   }
 
-  const goToDashboard = () => setActiveTab("admin_dashboard");
+  // NIEUW: Toon Portal View als er nog geen keuze is gemaakt
+  if (showPortal) {
+    return (
+      <PortalView
+        user={user}
+        onLogout={() => signOut(auth)}
+        onSelect={(module) => {
+          if (module === "catalog") setActiveTab("products");
+          if (module === "planning") setActiveTab("admin_digital_planning");
+          setShowPortal(false);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans overflow-hidden text-left">
       <Header
         user={user}
         isAdminMode={isAdminMode}
-        onLogout={() => signOut(auth)}
+        onLogout={() => {
+          setShowPortal(true); // Terug naar portal bij uitloggen (of login scherm)
+          signOut(auth);
+        }}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -231,11 +277,19 @@ const App = () => {
         appName={generalConfig?.appName}
         unreadCount={unreadCount}
         onNotificationClick={() => setActiveTab("messages")}
+        onNewMessage={() => setIsComposeOpen(true)}
       />
 
+      {/* Hoofdnavigatie Tabs */}
       <div className="bg-white border-b px-6 pt-2 flex gap-4 shadow-sm z-10 overflow-x-auto no-scrollbar shrink-0 text-left">
         {[
           { id: "products", label: "Catalogus", icon: <Package size={14} /> },
+          // NIEUW: Planning direct toegankelijk maken in tabs voor iedereen
+          {
+            id: "admin_digital_planning",
+            label: "Planning",
+            icon: <Factory size={14} />,
+          },
           {
             id: "inventory",
             label: "Gereedschappen",
@@ -270,9 +324,10 @@ const App = () => {
           <>
             <div className="h-6 w-px bg-slate-200 mx-2 shrink-0 self-center mb-2"></div>
             <button
-              onClick={() => setActiveTab("admin_dashboard")}
+              onClick={goToDashboard}
               className={`pb-3 text-[10px] font-black uppercase tracking-widest border-b-2 flex items-center gap-2 shrink-0 transition-all ${
-                activeTab.startsWith("admin_")
+                activeTab.startsWith("admin_") &&
+                activeTab !== "admin_digital_planning"
                   ? "border-blue-600 text-slate-900"
                   : "border-transparent text-slate-400 hover:text-slate-600"
               }`}
@@ -283,6 +338,7 @@ const App = () => {
         )}
       </div>
 
+      {/* Content Area */}
       <main className="flex-1 flex overflow-hidden relative">
         <Suspense
           fallback={
@@ -325,7 +381,6 @@ const App = () => {
               </div>
             </>
           )}
-
           {activeTab === "inventory" && (
             <AdminLocationsView onBack={() => setActiveTab("products")} />
           )}
@@ -336,8 +391,7 @@ const App = () => {
           {(activeTab === "messages" || activeTab === "admin_messages") && (
             <MessagesManager onBack={() => setActiveTab("products")} />
           )}
-
-          {/* BEHEER HUB ROUTES */}
+          {/* --- ADMIN HUB ROUTING --- */}
           {activeTab === "admin_dashboard" && (
             <AdminDashboard navigate={setActiveTab} />
           )}
@@ -356,10 +410,7 @@ const App = () => {
           )}
           {activeTab === "admin_new_product" && (
             <AdminNewProductView
-              onBack={() => {
-                setEditingProduct(null);
-                setActiveTab("admin_products");
-              }}
+              onBack={() => setActiveTab("admin_products")}
               editingProduct={editingProduct}
             />
           )}
@@ -375,7 +426,11 @@ const App = () => {
             />
           )}
           {activeTab === "admin_digital_planning" && (
-            <DigitalPlanningHub onBack={goToDashboard} />
+            <DigitalPlanningHub onBack={() => setShowPortal(true)} />
+          )}{" "}
+          {/* Terug naar portal */}
+          {activeTab === "admin_database" && (
+            <AdminDatabaseView onBack={goToDashboard} />
           )}
           {activeTab === "admin_users" && (
             <AdminUsersView onBack={goToDashboard} />
@@ -383,6 +438,7 @@ const App = () => {
         </Suspense>
       </main>
 
+      {/* Modals */}
       {viewingProduct && (
         <ProductDetailModal
           product={viewingProduct}
@@ -390,6 +446,12 @@ const App = () => {
           userRole={role}
         />
       )}
+      <Suspense fallback={null}>
+        <ComposeModal
+          isOpen={isComposeOpen}
+          onClose={() => setIsComposeOpen(false)}
+        />
+      </Suspense>
     </div>
   );
 };
