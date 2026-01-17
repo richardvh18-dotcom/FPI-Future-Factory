@@ -17,6 +17,8 @@ import {
   Lock,
   X,
   BellRing,
+  Globe, // Nieuw: Voor Land
+  Briefcase, // Nieuw: Voor Ploeg
 } from "lucide-react";
 import {
   collection,
@@ -25,13 +27,22 @@ import {
   deleteDoc,
   onSnapshot,
 } from "firebase/firestore";
-import { getAuth, createUserWithEmailAndPassword } from "firebase/auth";
-import { initializeApp, deleteApp } from "firebase/app";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut,
+  setPersistence,
+  inMemoryPersistence,
+} from "firebase/auth";
+import { initializeApp, deleteApp, getApp } from "firebase/app"; // getApp toegevoegd voor de fix
 import { db, appId } from "../../config/firebase";
 
 /**
- * AdminUsersView V2.2: Beheert gebruikers en validatie-notificaties.
- * NIEUW: Checkbox om engineers toe te wijzen voor automatische inbox-meldingen.
+ * AdminUsersView V2.5
+ * - Layout: Origineel (zoals gevraagd).
+ * - Fix: Haalt firebase config nu uit de draaiende app (lost de 'config niet gevonden' fout op).
+ * - Nieuw: Wachtwoord reset, Land en Ploeg velden.
  */
 const AdminUsersView = ({ onBack }) => {
   const [users, setUsers] = useState([]);
@@ -39,33 +50,42 @@ const AdminUsersView = ({ onBack }) => {
   const [loading, setLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState("active");
   const [expandedRoles, setExpandedRoles] = useState({});
   const [editingUser, setEditingUser] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
   const [statusMsg, setStatusMsg] = useState(null);
+  const [resetSent, setResetSent] = useState(false); // Status voor reset knop
 
   const [formData, setFormData] = useState({
     email: "",
     name: "",
     role: "operator",
-    country: "Nederland",
-    tempPassword: "",
-    receivesValidationAlerts: false, // Nieuw veld
+    country: "Nederland", // Nieuw
+    shift: "Dagdienst", // Nieuw
+    tempPassword: "", // Nieuw
+    receivesValidationAlerts: false,
+    defaultStation: "",
   });
 
+  // FIX: Haal config robuust op via de bestaande app instantie
   const getSafeConfig = () => {
     try {
-      if (
-        typeof window.__firebase_config !== "undefined" &&
-        window.__firebase_config
-      ) {
+      // Poging 1: Via de SDK (Meest betrouwbaar)
+      const app = getApp();
+      if (app.options) return app.options;
+    } catch (e) {
+      // App misschien nog niet geïnitialiseerd (onwaarschijnlijk hier)
+    }
+
+    try {
+      // Poging 2: Via window object (Fallback voor preview omgevingen)
+      if (typeof window !== "undefined" && window.__firebase_config) {
         return typeof window.__firebase_config === "string"
           ? JSON.parse(window.__firebase_config)
           : window.__firebase_config;
       }
     } catch (e) {
-      console.error(e);
+      console.error("Config parse error:", e);
     }
     return null;
   };
@@ -91,6 +111,34 @@ const AdminUsersView = ({ onBack }) => {
     };
   }, []);
 
+  // Vul formulier bij openen
+  useEffect(() => {
+    if (editingUser) {
+      setFormData({
+        email: editingUser.email || "",
+        name: editingUser.name || editingUser.displayName || "",
+        role: editingUser.role || "operator",
+        country: editingUser.country || "Nederland",
+        shift: editingUser.shift || "Dagdienst",
+        tempPassword: "", // Reset
+        receivesValidationAlerts: editingUser.receivesValidationAlerts || false,
+        defaultStation: editingUser.defaultStation || "",
+      });
+      setResetSent(false);
+    } else if (isCreating) {
+      setFormData({
+        email: "",
+        name: "",
+        role: "operator",
+        country: "Nederland",
+        shift: "Dagdienst",
+        tempPassword: "",
+        receivesValidationAlerts: false,
+        defaultStation: "",
+      });
+    }
+  }, [editingUser, isCreating]);
+
   const groupedUsers = useMemo(() => {
     const filtered = users.filter(
       (u) =>
@@ -105,17 +153,67 @@ const AdminUsersView = ({ onBack }) => {
     }, {});
   }, [users, searchTerm]);
 
+  // Hulpfunctie: Maak gebruiker aan in Auth (zonder admin uit te loggen)
+  const createAuthUser = async (email, password) => {
+    const config = getSafeConfig();
+    if (!config) throw new Error("Kan Firebase configuratie niet vinden.");
+
+    // Unieke naam voor tijdelijke app
+    const secondaryAppName = `secondaryApp-${Date.now()}`;
+    let secondaryApp;
+
+    try {
+      secondaryApp = initializeApp(config, secondaryAppName);
+      const secondaryAuth = getAuth(secondaryApp);
+
+      // Sla sessie alleen op in geheugen (niet in cookies), zodat Admin ingelogd blijft
+      await setPersistence(secondaryAuth, inMemoryPersistence);
+
+      await createUserWithEmailAndPassword(secondaryAuth, email, password);
+      await signOut(secondaryAuth); // Netjes afsluiten
+      console.log("Gebruiker aangemaakt in Auth");
+    } catch (error) {
+      if (error.code === "auth/email-already-in-use") {
+        console.log("Email bestaat al, alleen DB update.");
+      } else {
+        throw error;
+      }
+    } finally {
+      if (secondaryApp) await deleteApp(secondaryApp).catch(console.error);
+    }
+  };
+
   const handleSaveUser = async (e) => {
     e.preventDefault();
     setIsProcessing(true);
+    setStatusMsg(null);
+
     try {
       const docId = formData.email.toLowerCase().trim();
+
+      // 1. Maak aan in Auth als er een wachtwoord is ingevuld (alleen bij nieuw)
+      if (
+        isCreating &&
+        formData.tempPassword &&
+        formData.tempPassword.length >= 6
+      ) {
+        await createAuthUser(docId, formData.tempPassword);
+      }
+
+      // 2. Sla op in Firestore (zonder wachtwoord)
+      const { tempPassword, ...dataToSave } = formData;
+
       await setDoc(
         doc(db, "artifacts", appId, "public", "data", "user_roles", docId),
-        { ...formData, email: docId, updatedAt: new Date().toISOString() },
+        { ...dataToSave, email: docId, updatedAt: new Date().toISOString() },
         { merge: true }
       );
-      setStatusMsg({ type: "success", text: "Gebruiker bijgewerkt." });
+
+      setStatusMsg({
+        type: "success",
+        text: "Gebruiker succesvol opgeslagen.",
+      });
+
       setTimeout(() => {
         setIsCreating(false);
         setEditingUser(null);
@@ -123,8 +221,39 @@ const AdminUsersView = ({ onBack }) => {
         setStatusMsg(null);
       }, 1000);
     } catch (error) {
-      setStatusMsg({ type: "error", text: "Opslaan mislukt." });
+      let msg = "Opslaan mislukt.";
+      if (error.code === "auth/weak-password")
+        msg = "Wachtwoord te zwak (min. 6 tekens).";
+      if (error.code === "auth/invalid-email") msg = "Ongeldig e-mailadres.";
+
+      setStatusMsg({ type: "error", text: msg });
       setIsProcessing(false);
+    }
+  };
+
+  const handleSendReset = async () => {
+    if (!formData.email) return;
+    const auth = getAuth();
+    try {
+      await sendPasswordResetEmail(auth, formData.email);
+      setResetSent(true);
+      alert(`Reset e-mail verzonden naar ${formData.email}`);
+    } catch (e) {
+      alert("Kon e-mail niet verzenden: " + e.message);
+    }
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (
+      !window.confirm("Weet je zeker dat je deze gebruiker wilt verwijderen?")
+    )
+      return;
+    try {
+      await deleteDoc(
+        doc(db, "artifacts", appId, "public", "data", "user_roles", userId)
+      );
+    } catch (e) {
+      alert("Fout bij verwijderen");
     }
   };
 
@@ -207,65 +336,160 @@ const AdminUsersView = ({ onBack }) => {
                 </select>
               </div>
 
-              {isEngineerRole && (
-                <div className="col-span-2 p-6 bg-blue-50/50 border-2 border-blue-100 rounded-3xl animate-in slide-in-from-top-2">
-                  <label className="flex items-center gap-4 cursor-pointer">
-                    <div className="relative">
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        checked={formData.receivesValidationAlerts}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            receivesValidationAlerts: e.target.checked,
-                          })
-                        }
-                      />
-                      <div
-                        className={`w-12 h-6 rounded-full transition-all ${
-                          formData.receivesValidationAlerts
-                            ? "bg-blue-600"
-                            : "bg-slate-300"
-                        }`}
-                      ></div>
-                      <div
-                        className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all ${
-                          formData.receivesValidationAlerts
-                            ? "translate-x-6"
-                            : ""
-                        }`}
-                      ></div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <BellRing
-                        size={16}
-                        className={
-                          formData.receivesValidationAlerts
-                            ? "text-blue-600"
-                            : "text-slate-400"
-                        }
-                      />
-                      <span className="text-xs font-black uppercase text-slate-700 tracking-wider">
-                        Ontvang validatie meldingen in inbox
-                      </span>
-                    </div>
-                  </label>
-                  <p className="text-[9px] font-bold text-slate-400 uppercase mt-2 ml-16 italic">
-                    Indien ingeschakeld, krijgt deze engineer een bericht
-                    wanneer een product ter validatie wordt ingediend.
+              {/* NIEUW: Land & Ploeg */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                  <Globe size={10} /> Land
+                </label>
+                <input
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                  value={formData.country}
+                  onChange={(e) =>
+                    setFormData({ ...formData, country: e.target.value })
+                  }
+                  placeholder="Nederland"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                  <Briefcase size={10} /> Ploeg / Dienst
+                </label>
+                <select
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-blue-500"
+                  value={formData.shift}
+                  onChange={(e) =>
+                    setFormData({ ...formData, shift: e.target.value })
+                  }
+                >
+                  <option value="Dagdienst">Dagdienst</option>
+                  <option value="Ploeg 1">Ploeg 1</option>
+                  <option value="Ploeg 2">Ploeg 2</option>
+                  <option value="Ploeg 3">Ploeg 3</option>
+                  <option value="Ploeg 4">Ploeg 4</option>
+                  <option value="Ploeg 5">Ploeg 5</option>
+                  <option value="Kantoor">Kantoor</option>
+                </select>
+              </div>
+            </div>
+
+            {/* WACHTWOORD BEHEER */}
+            <div className="pt-4 border-t border-slate-100">
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-2">
+                <Key size={14} /> Beveiliging & Toegang
+              </label>
+
+              {isCreating ? (
+                <div>
+                  <input
+                    type="text"
+                    className="w-full bg-orange-50 border-2 border-orange-100 text-orange-800 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-orange-500 placeholder-orange-300"
+                    placeholder="Tijdelijk wachtwoord (min. 6 tekens)"
+                    value={formData.tempPassword}
+                    onChange={(e) =>
+                      setFormData({ ...formData, tempPassword: e.target.value })
+                    }
+                  />
+                  <p className="text-[9px] text-orange-400 mt-2 ml-2 italic">
+                    Vul hier een wachtwoord in om direct een login aan te maken.
                   </p>
+                </div>
+              ) : (
+                <div className="bg-slate-50 rounded-2xl p-4 flex justify-between items-center border border-slate-200">
+                  <div>
+                    <p className="text-sm font-bold text-slate-700">
+                      Wachtwoord Vergeten?
+                    </p>
+                    <p className="text-[10px] text-slate-400">
+                      Stuur een herstel e-mail naar de gebruiker.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSendReset}
+                    disabled={resetSent}
+                    className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all ${
+                      resetSent
+                        ? "bg-green-100 text-green-700"
+                        : "bg-white border-2 border-slate-200 hover:border-blue-500 text-slate-600 hover:text-blue-600"
+                    }`}
+                  >
+                    {resetSent ? "Verzonden" : "Stuur Reset Mail"}
+                  </button>
                 </div>
               )}
             </div>
 
-            <button
-              type="submit"
-              disabled={isProcessing}
-              className="w-full bg-slate-900 text-white py-5 rounded-[20px] font-black text-xs uppercase tracking-widest hover:bg-emerald-600 shadow-xl transition-all disabled:opacity-50"
-            >
-              {isProcessing ? "Verwerken..." : "Configuratie Opslaan"}
-            </button>
+            {isEngineerRole && (
+              <div className="col-span-2 p-6 bg-blue-50/50 border-2 border-blue-100 rounded-3xl animate-in slide-in-from-top-2">
+                <label className="flex items-center gap-4 cursor-pointer">
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={formData.receivesValidationAlerts}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          receivesValidationAlerts: e.target.checked,
+                        })
+                      }
+                    />
+                    <div
+                      className={`w-12 h-6 rounded-full transition-all ${
+                        formData.receivesValidationAlerts
+                          ? "bg-blue-600"
+                          : "bg-slate-300"
+                      }`}
+                    ></div>
+                    <div
+                      className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all ${
+                        formData.receivesValidationAlerts ? "translate-x-6" : ""
+                      }`}
+                    ></div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <BellRing
+                      size={16}
+                      className={
+                        formData.receivesValidationAlerts
+                          ? "text-blue-600"
+                          : "text-slate-400"
+                      }
+                    />
+                    <span className="text-xs font-black uppercase text-slate-700 tracking-wider">
+                      Ontvang validatie meldingen in inbox
+                    </span>
+                  </div>
+                </label>
+                <p className="text-[9px] font-bold text-slate-400 uppercase mt-2 ml-16 italic">
+                  Indien ingeschakeld, krijgt deze engineer een bericht wanneer
+                  een product ter validatie wordt ingediend.
+                </p>
+              </div>
+            )}
+
+            {/* STATUS EN SAVE */}
+            {statusMsg && (
+              <div
+                className={`p-4 rounded-xl text-center font-bold text-sm ${
+                  statusMsg.type === "error"
+                    ? "bg-red-50 text-red-600"
+                    : "bg-green-50 text-green-600"
+                }`}
+              >
+                {statusMsg.text}
+              </div>
+            )}
+
+            <div className="flex gap-4">
+              <button
+                type="submit"
+                disabled={isProcessing}
+                className="w-full bg-slate-900 text-white py-5 rounded-[20px] font-black text-xs uppercase tracking-widest hover:bg-emerald-600 shadow-xl transition-all disabled:opacity-50"
+              >
+                {isProcessing ? "Verwerken..." : "Opslaan"}
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -273,8 +497,8 @@ const AdminUsersView = ({ onBack }) => {
   }
 
   return (
-    <div className="h-full w-full bg-slate-50 overflow-y-auto custom-scrollbar p-8 flex flex-col items-center text-left">
-      <div className="w-full max-w-5xl space-y-6">
+    <div className="h-full w-full bg-slate-50 p-8 flex justify-center overflow-y-auto custom-scrollbar text-left">
+      <div className="max-w-5xl w-full space-y-6">
         <div className="flex justify-between items-center bg-white p-8 rounded-[32px] shadow-sm border border-slate-200">
           <div className="flex items-center gap-4">
             <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
@@ -298,6 +522,7 @@ const AdminUsersView = ({ onBack }) => {
                 name: "",
                 role: "operator",
                 country: "Nederland",
+                shift: "Dagdienst",
                 tempPassword: "",
                 receivesValidationAlerts: false,
               });
@@ -361,6 +586,20 @@ const AdminUsersView = ({ onBack }) => {
                               {user.email}
                             </p>
                           </div>
+                          {/* Badges voor Land & Ploeg */}
+                          <div className="flex gap-2 ml-4">
+                            {user.country && (
+                              <span className="text-[9px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded uppercase font-bold flex items-center gap-1">
+                                <Globe size={10} /> {user.country}
+                              </span>
+                            )}
+                            {user.shift && (
+                              <span className="text-[9px] bg-blue-50 text-blue-500 px-2 py-0.5 rounded uppercase font-bold flex items-center gap-1 border border-blue-100">
+                                <Briefcase size={10} /> {user.shift}
+                              </span>
+                            )}
+                          </div>
+
                           {user.receivesValidationAlerts && (
                             <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-[8px] font-black uppercase rounded-lg border border-blue-100 flex items-center gap-1">
                               <BellRing size={10} /> Alerts
@@ -371,15 +610,17 @@ const AdminUsersView = ({ onBack }) => {
                           <button
                             onClick={() => {
                               setEditingUser(user);
-                              setFormData({ ...user });
+                              setIsCreating(false);
                             }}
                             className="p-2 text-slate-300 hover:text-blue-600 transition-colors border-none bg-transparent shadow-none"
+                            title="Bewerken"
                           >
                             <Edit2 size={16} />
                           </button>
                           <button
-                            onClick={() => handleDelete(user.id)}
+                            onClick={() => handleDeleteUser(user.id)}
                             className="p-2 text-slate-300 hover:text-red-500 transition-colors border-none bg-transparent shadow-none"
+                            title="Verwijderen"
                           >
                             <Trash2 size={16} />
                           </button>

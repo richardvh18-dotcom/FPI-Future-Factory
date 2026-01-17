@@ -13,6 +13,7 @@ import {
   Briefcase,
   MessageSquarePlus, // NIEUW: Icoon voor nieuw bericht
 } from "lucide-react";
+import { useAdminAuth } from "../hooks/useAdminAuth";
 
 const Header = ({
   user,
@@ -26,16 +27,23 @@ const Header = ({
   unreadCount,
   onNotificationClick,
   onNewMessage, // NIEUW: Prop om modal te openen
+  onNavigate, // TOEGEVOEGD: Voor profiel navigatie
 }) => {
+  // Haal auth data op als fallback
+  const { user: authUser, role, logout } = useAdminAuth();
+
+  // Gebruik props als ze er zijn, anders de hook data.
+  const currentUser = user || authUser;
+  // Bepaal admin mode: als prop is meegegeven, gebruik die. Anders check rol.
+  const isUserAdmin =
+    isAdminMode !== undefined ? isAdminMode : role === "admin";
+
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showMobileSearch, setShowMobileSearch] = useState(false);
-
-  // State voor de wisselende weergave (Naam vs Rol)
   const [showRoleInfo, setShowRoleInfo] = useState(false);
 
   const userMenuRef = useRef(null);
 
-  // Sluit menu bij klikken buiten
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
@@ -46,7 +54,6 @@ const Header = ({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Timer: Wissel elke 20 seconden tussen Naam en Rol
   useEffect(() => {
     const interval = setInterval(() => {
       setShowRoleInfo((prev) => !prev);
@@ -55,9 +62,16 @@ const Header = ({
     return () => clearInterval(interval);
   }, []);
 
-  // Bepaal de weergave tekst en icoon
-  const displayName = user?.email?.split("@")[0] || "Gebruiker";
-  const displayRole = isAdminMode ? "Administrator" : "Operator";
+  const handleLogoutAction = () => {
+    if (onLogout) {
+      onLogout();
+    } else if (logout) {
+      logout();
+    }
+    setShowUserMenu(false);
+  };
+
+  const displayName = currentUser?.email?.split("@")[0] || "Gebruiker";
 
   return (
     <header className="bg-gradient-to-r from-slate-900 via-cyan-950 to-blue-950 border-b border-white/10 sticky top-0 z-40 h-16 shrink-0 text-white shadow-md">
@@ -102,14 +116,14 @@ const Header = ({
             </div>
             <input
               type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              value={searchQuery || ""}
+              onChange={(e) => setSearchQuery && setSearchQuery(e.target.value)}
               className="block w-full pl-10 pr-3 py-2 border border-white/10 rounded-xl leading-5 bg-slate-950/50 text-white placeholder-slate-500 focus:outline-none focus:bg-slate-900 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all sm:text-sm"
               placeholder="Zoek op order, lotnummer of item..."
             />
             {searchQuery && (
               <button
-                onClick={() => setSearchQuery("")}
+                onClick={() => setSearchQuery && setSearchQuery("")}
                 className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-white"
               >
                 <X size={16} />
@@ -167,13 +181,13 @@ const Header = ({
                 }`}
               >
                 {showRoleInfo ? (
-                  isAdminMode ? (
+                  isUserAdmin ? (
                     <ShieldCheck size={18} />
                   ) : (
                     <Briefcase size={18} />
                   )
                 ) : (
-                  user?.email?.[0].toUpperCase() || <User size={18} />
+                  currentUser?.email?.[0].toUpperCase() || <User size={18} />
                 )}
               </div>
 
@@ -181,10 +195,10 @@ const Header = ({
                 <div className="transition-all duration-500">
                   <p className="text-sm font-bold text-slate-100 leading-none truncate animate-in fade-in slide-in-from-bottom-1">
                     {showRoleInfo
-                      ? isAdminMode
+                      ? isUserAdmin
                         ? "Administrator"
                         : "Operator"
-                      : user?.email?.split("@")[0]}
+                      : displayName}
                   </p>
                   <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wide mt-0.5 animate-in fade-in slide-in-from-bottom-1 truncate">
                     {showRoleInfo ? "Huidige Functie" : "Ingelogd Gebruiker"}
@@ -204,14 +218,20 @@ const Header = ({
               <div className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-gray-100 py-1 focus:outline-none transform origin-top-right transition-all animate-in fade-in slide-in-from-top-2 text-slate-800 z-50">
                 <div className="px-4 py-3 border-b border-gray-50 sm:hidden">
                   <p className="text-sm font-bold text-gray-900">
-                    {user?.email}
+                    {currentUser?.email}
                   </p>
                   <p className="text-xs text-gray-500 capitalize">
-                    {isAdminMode ? "Admin" : "User"}
+                    {isUserAdmin ? "Admin" : "User"}
                   </p>
                 </div>
 
-                <button className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 hover:text-blue-600 flex items-center gap-2 transition-colors">
+                <button
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    if (onNavigate) onNavigate("profile"); // DEZE REGEL ZORGT VOOR DE WERKING
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 hover:text-blue-600 flex items-center gap-2 transition-colors"
+                >
                   <User size={16} /> Profiel
                 </button>
                 <button className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 hover:text-blue-600 flex items-center gap-2 transition-colors">
@@ -221,10 +241,7 @@ const Header = ({
                 <div className="my-1 border-t border-gray-50" />
 
                 <button
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    onLogout();
-                  }}
+                  onClick={handleLogoutAction}
                   className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors font-medium"
                 >
                   <LogOut size={16} /> Uitloggen
@@ -243,8 +260,8 @@ const Header = ({
             <input
               type="text"
               autoFocus
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              value={searchQuery || ""}
+              onChange={(e) => setSearchQuery && setSearchQuery(e.target.value)}
               className="block w-full pl-10 pr-3 py-2 border border-slate-700 rounded-lg leading-5 bg-slate-800 text-white placeholder-slate-500 focus:outline-none focus:placeholder-slate-400 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm"
               placeholder="Zoeken..."
             />

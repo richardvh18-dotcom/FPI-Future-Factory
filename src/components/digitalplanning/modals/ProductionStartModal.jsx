@@ -1,19 +1,42 @@
 import React, { useState, useEffect } from "react";
 import {
   PlayCircle,
+  Printer,
   RefreshCw,
   Edit3,
   Maximize,
   Minimize,
   QrCode,
-  Printer,
   CheckCircle,
-  ImageIcon,
   BookOpen,
+  X,
+  Layers, // Nieuw icoon voor de string functionaliteit
 } from "lucide-react";
-import { useAdminAuth } from "../../../hooks/useAdminAuth";
 
-// FPI LABEL START MODAL
+// Hulpfunctie voor weeknummer
+const getWeekNumber = (date) => {
+  const d = new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+  );
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+};
+
+// Helper die zowel week als jaar teruggeeft
+const getISOWeekInfo = (date) => {
+  const d = new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+  );
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  const year = d.getUTCFullYear();
+  return { week: weekNo, year: year };
+};
+
 const ProductionStartModal = ({
   order,
   isOpen,
@@ -27,23 +50,14 @@ const ProductionStartModal = ({
   const [labelSize, setLabelSize] = useState("140x90");
   const [lotNumber, setLotNumber] = useState("");
   const [manualInput, setManualInput] = useState("");
-  const [showDrawing, setShowDrawing] = useState(false);
-
-  const getWeekNumber = (date) => {
-    const d = new Date(
-      Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
-    );
-    const dayNum = d.getUTCDay() || 7;
-    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-    return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
-  };
+  const [stringCount, setStringCount] = useState(1); // NIEUW: Aantal tegelijk
 
   useEffect(() => {
     if (isOpen && order && mode === "auto") {
       const now = new Date();
       const yy = now.getFullYear().toString().slice(-2);
-      const ww = String(getWeekNumber(now)).padStart(2, "0");
+      const { week } = getISOWeekInfo(now);
+      const ww = String(week).padStart(2, "0");
       const digits = stationId.replace(/\D/g, "");
       const machineCode = digits ? `4${digits}` : "400";
       const prefix = `40${yy}${ww}${machineCode}40`;
@@ -54,6 +68,7 @@ const ProductionStartModal = ({
       const seq = String(count + 1).padStart(4, "0");
 
       setLotNumber(`${prefix}${seq}`);
+      setStringCount(1); // Reset naar 1 bij openen
     } else if (mode === "manual") {
       setLotNumber(manualInput);
     }
@@ -174,6 +189,7 @@ const ProductionStartModal = ({
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden border border-gray-100 scale-100 animate-in zoom-in-95 duration-200 flex flex-col md:flex-row max-h-[90vh]">
+        {/* LINKER KOLOM: Instellingen & Info */}
         <div className="w-full md:w-1/3 p-8 border-r border-gray-100 flex flex-col bg-gray-50/30">
           <div className="mb-6">
             <h2 className="text-2xl font-black text-gray-800 uppercase italic tracking-tight">
@@ -183,6 +199,7 @@ const ProductionStartModal = ({
               Configureer label en data
             </p>
           </div>
+
           <div className="space-y-6 flex-1">
             <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm">
               <div className="flex justify-between items-start">
@@ -212,24 +229,16 @@ const ProductionStartModal = ({
                     {order.drawing}
                   </p>
                 )}
+
                 {order.linkedProductId && (
                   <div className="mt-3">
                     <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 px-2 py-1 rounded text-[10px] font-bold uppercase w-fit mb-2">
-                      <CheckCircle size={12} /> Gekoppeld aan Catalogus
+                      <CheckCircle size={12} /> Gekoppeld
                     </div>
-                    {order.linkedProductImage && (
-                      <button
-                        onClick={() => setShowDrawing(!showDrawing)}
-                        className="w-full py-2 bg-blue-100 text-blue-700 rounded-lg font-bold text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-blue-200 transition-colors"
-                      >
-                        <ImageIcon size={14} />{" "}
-                        {showDrawing ? "Toon Label" : "Toon Tekening"}
-                      </button>
-                    )}
                     {/* CORRECTIE: Gebruik onOpenProductInfo hier */}
                     <button
                       onClick={() => onOpenProductInfo(order.linkedProductId)}
-                      className="w-full py-2 bg-blue-100 text-blue-700 rounded-lg font-bold text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-blue-200 transition-colors mt-2"
+                      className="w-full py-2 bg-blue-100 text-blue-700 rounded-lg font-bold text-[10px] uppercase flex items-center justify-center gap-2 hover:bg-blue-200 transition-colors"
                     >
                       <BookOpen size={14} /> Open Product Dossier
                     </button>
@@ -237,6 +246,33 @@ const ProductionStartModal = ({
                 )}
               </div>
             </div>
+
+            {/* NIEUW: PRODUCTIE STRING (MULTI-START) */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                Productie String (Aantal tegelijk)
+              </label>
+              <div className="flex items-center gap-2 bg-gray-100 p-2 rounded-xl border-2 border-transparent focus-within:border-blue-500 transition-colors">
+                <Layers size={20} className="text-gray-400 ml-2" />
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={stringCount}
+                  onChange={(e) =>
+                    setStringCount(parseInt(e.target.value) || 1)
+                  }
+                  className="bg-transparent font-bold text-gray-800 text-sm w-full outline-none"
+                />
+              </div>
+              {stringCount > 1 && (
+                <p className="text-[10px] text-blue-600 font-bold animate-pulse">
+                  Er worden {stringCount} unieke lotnummers gegenereerd.
+                </p>
+              )}
+            </div>
+
+            {/* Label Formaat Selectie */}
             <div className="space-y-2">
               <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
                 Label Formaat
@@ -264,6 +300,8 @@ const ProductionStartModal = ({
                 </button>
               </div>
             </div>
+
+            {/* Lotnummer Methode */}
             <div className="space-y-2">
               <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
                 Lotnummer
@@ -295,7 +333,7 @@ const ProductionStartModal = ({
                   <input
                     type="text"
                     placeholder="LOTNUMMER"
-                    className="w-full p-3 border-2 border-blue-200 rounded-xl font-mono text-base font-bold text-center uppercase"
+                    className="w-full p-3 border-2 border-blue-200 rounded-xl font-mono text-sm font-bold text-center uppercase"
                     value={manualInput}
                     onChange={(e) =>
                       setManualInput(e.target.value.toUpperCase())
@@ -314,155 +352,140 @@ const ProductionStartModal = ({
               Annuleren
             </button>
             <button
-              onClick={() => onStart(order, lotNumber)}
+              onClick={() => onStart(order, lotNumber, stringCount)} // Pass stringCount
               disabled={!lotNumber}
               className="flex-[2] py-4 bg-emerald-600 text-white rounded-xl font-black text-sm uppercase tracking-widest hover:bg-emerald-700 shadow-lg shadow-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
             >
-              <PlayCircle size={20} /> Start
+              <PlayCircle size={20} /> Start{" "}
+              {stringCount > 1 && `(${stringCount}x)`}
             </button>
           </div>
         </div>
+
+        {/* RECHTER KOLOM: Preview */}
         <div className="w-full md:w-2/3 bg-gray-900 p-8 flex flex-col items-center justify-center relative overflow-hidden">
-          {showDrawing && order.linkedProductImage ? (
-            <div className="w-full h-full flex flex-col items-center justify-center animate-in zoom-in-95">
-              <div className="absolute top-4 right-4 bg-white/10 text-white px-3 py-1 rounded-full text-xs font-bold">
-                Catalogus Tekening
-              </div>
-              <img
-                src={order.linkedProductImage}
-                alt="Technische Tekening"
-                className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border-4 border-white"
-              />
-            </div>
-          ) : (
-            <>
-              <div className="absolute top-4 right-4 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                  Printer Ready ({labelSize}mm)
-                </span>
-              </div>
-              <div className="mb-4 text-white/50 text-xs font-bold uppercase tracking-widest">
-                Live Voorbeeld
-              </div>
-              <div
-                className={`bg-white shadow-2xl relative rounded-sm border-2 border-white flex transition-all duration-300 ${
-                  labelSize === "140x90"
-                    ? "w-[450px] h-[290px] flex-col p-4"
-                    : "w-[450px] h-[130px] flex-row p-2"
-                }`}
-              >
-                {labelSize === "140x90" ? (
-                  <>
-                    <div className="flex justify-between items-center border-b-2 border-black pb-2 mb-2">
-                      <h1 className="text-3xl font-black uppercase tracking-tighter text-slate-900 m-0">
-                        WAVISTRONG
-                      </h1>
-                      <span className="text-sm font-bold text-slate-900">
-                        {order.orderId}
-                      </span>
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+              Printer Ready ({labelSize}mm)
+            </span>
+          </div>
+          <div className="mb-4 text-white/50 text-xs font-bold uppercase tracking-widest">
+            Live Voorbeeld
+          </div>
+          {/* ... Preview code blijft hetzelfde ... */}
+          <div
+            className={`bg-white shadow-2xl relative rounded-sm border-2 border-white flex transition-all duration-300 ${
+              labelSize === "140x90"
+                ? "w-[450px] h-[290px] flex-col p-4"
+                : "w-[450px] h-[130px] flex-row p-2"
+            }`}
+          >
+            {labelSize === "140x90" ? (
+              <>
+                <div className="flex justify-between items-center border-b-2 border-black pb-2 mb-2">
+                  <h1 className="text-3xl font-black uppercase tracking-tighter text-slate-900 m-0">
+                    WAVISTRONG
+                  </h1>
+                  <span className="text-sm font-bold text-slate-900">
+                    {order.orderId}
+                  </span>
+                </div>
+                <div className="flex flex-1">
+                  <div className="w-[60%] border-r-2 border-black pr-2 flex flex-col justify-center">
+                    <h2 className="text-xl font-bold leading-tight uppercase text-slate-900 mb-2 line-clamp-2">
+                      {order.item}
+                    </h2>
+                    <div className="text-xs text-slate-700 font-mono mb-4">
+                      DRAWING: {order.drawing || "N/A"}
+                      <br />
+                      PRESSURE: 20 BAR
+                      <br />
+                      JOINT CODE: CST20
                     </div>
-                    <div className="flex flex-1">
-                      <div className="w-[60%] border-r-2 border-black pr-2 flex flex-col justify-center">
-                        <h2 className="text-xl font-bold leading-tight uppercase text-slate-900 mb-2 line-clamp-2">
-                          {order.item}
-                        </h2>
-                        <div className="text-xs text-slate-700 font-mono mb-4">
-                          DRAWING: {order.drawing || "N/A"}
-                          <br />
-                          PRESSURE: 20 BAR
-                          <br />
-                          JOINT CODE: CST20
-                        </div>
-                        <div className="mt-auto">
-                          <div className="h-8 w-full flex items-end justify-start gap-[2px] opacity-90 mb-1 overflow-hidden">
-                            {[...Array(30)].map((_, i) => (
-                              <div
-                                key={i}
-                                className="bg-black"
-                                style={{
-                                  width: Math.random() > 0.5 ? "2px" : "5px",
-                                  height: "100%",
-                                }}
-                              ></div>
-                            ))}
-                          </div>
-                          <p className="font-mono text-lg font-black tracking-widest text-slate-900">
-                            {lotNumber || "------"}
-                          </p>
-                        </div>
+                    <div className="mt-auto">
+                      <div className="h-8 w-full flex items-end justify-start gap-[2px] opacity-90 mb-1 overflow-hidden">
+                        {[...Array(30)].map((_, i) => (
+                          <div
+                            key={i}
+                            className="bg-black"
+                            style={{
+                              width: Math.random() > 0.5 ? "2px" : "5px",
+                              height: "100%",
+                            }}
+                          ></div>
+                        ))}
                       </div>
-                      <div className="w-[40%] pl-2 flex flex-col justify-between items-center">
-                        <div className="flex gap-2 w-full justify-between">
-                          <div className="flex flex-col items-center">
-                            <QrCode className="w-12 h-12 text-slate-900" />
-                            <span className="text-[7px] font-bold mt-1">
-                              ORDER
-                            </span>
-                          </div>
-                          <div className="flex flex-col items-center">
-                            <QrCode className="w-12 h-12 text-slate-900" />
-                            <span className="text-[7px] font-bold mt-1">
-                              ITEM
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-center mt-2">
-                          <QrCode
-                            className="w-20 h-20 text-slate-900"
-                            strokeWidth={2}
-                          />
-                          <span className="text-[8px] font-bold mt-1">
-                            LOT NUMBER
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2 pt-1 border-t-2 border-black w-full text-[10px] font-black uppercase tracking-widest text-slate-900 text-center">
-                      FUTURE PIPE INDUSTRIES
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-[30%] border-r-2 border-black pr-2 flex flex-col justify-between items-start">
-                      <h1 className="text-xl font-black uppercase tracking-tighter text-slate-900 leading-none">
-                        WAVISTRONG
-                      </h1>
-                      <span className="text-xs font-bold text-slate-900">
-                        {order.orderId}
-                      </span>
-                      <div className="text-[8px] font-black uppercase tracking-widest text-slate-900">
-                        FPI
-                      </div>
-                    </div>
-                    <div className="w-[40%] border-r-2 border-black px-2 flex flex-col justify-center">
-                      <h2 className="text-xs font-bold leading-tight uppercase text-slate-900 mb-1 line-clamp-2">
-                        {order.item}
-                      </h2>
-                      <span className="text-[9px] text-slate-600 font-mono mb-1">
-                        {order.drawing}
-                      </span>
-                      <p className="font-mono text-sm font-black tracking-widest text-slate-900 truncate">
+                      <p className="font-mono text-lg font-black tracking-widest text-slate-900">
                         {lotNumber || "------"}
                       </p>
                     </div>
-                    <div className="w-[30%] pl-2 flex items-center justify-center">
+                  </div>
+                  <div className="w-[40%] pl-2 flex flex-col justify-between items-center">
+                    <div className="flex gap-2 w-full justify-between">
+                      <div className="flex flex-col items-center">
+                        <QrCode className="w-12 h-12 text-slate-900" />
+                        <span className="text-[7px] font-bold mt-1">ORDER</span>
+                      </div>
+                      <div className="flex flex-col items-center">
+                        <QrCode className="w-12 h-12 text-slate-900" />
+                        <span className="text-[7px] font-bold mt-1">ITEM</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-center mt-2">
                       <QrCode
                         className="w-20 h-20 text-slate-900"
                         strokeWidth={2}
                       />
+                      <span className="text-[8px] font-bold mt-1">
+                        LOT NUMBER
+                      </span>
                     </div>
-                  </>
-                )}
-              </div>
-              <button
-                onClick={handlePrintLabel}
-                className="mt-8 py-3 px-8 bg-emerald-500 hover:bg-emerald-400 text-white rounded-full font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-95"
-              >
-                <Printer size={16} /> Print Etiket (ZPL)
-              </button>
-            </>
-          )}
+                  </div>
+                </div>
+                <div className="mt-2 pt-1 border-t-2 border-black w-full text-[10px] font-black uppercase tracking-widest text-slate-900 text-center">
+                  FUTURE PIPE INDUSTRIES
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="w-[30%] border-r-2 border-black pr-2 flex flex-col justify-between items-start">
+                  <h1 className="text-xl font-black uppercase tracking-tighter text-slate-900 leading-none">
+                    WAVISTRONG
+                  </h1>
+                  <span className="text-xs font-bold text-slate-900">
+                    {order.orderId}
+                  </span>
+                  <div className="text-[8px] font-black uppercase tracking-widest text-slate-900">
+                    FPI
+                  </div>
+                </div>
+                <div className="w-[40%] border-r-2 border-black px-2 flex flex-col justify-center">
+                  <h2 className="text-xs font-bold leading-tight uppercase text-slate-900 mb-1 line-clamp-2">
+                    {order.item}
+                  </h2>
+                  <span className="text-[9px] text-slate-600 font-mono mb-1">
+                    {order.drawing}
+                  </span>
+                  <p className="font-mono text-sm font-black tracking-widest text-slate-900 truncate">
+                    {lotNumber || "------"}
+                  </p>
+                </div>
+                <div className="w-[30%] pl-2 flex items-center justify-center">
+                  <QrCode
+                    className="w-20 h-20 text-slate-900"
+                    strokeWidth={2}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <button
+            onClick={handlePrintLabel}
+            className="mt-8 py-3 px-8 bg-emerald-500 hover:bg-emerald-400 text-white rounded-full font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-95"
+          >
+            <Printer size={16} /> Print Etiket (ZPL)
+          </button>
         </div>
       </div>
     </div>
