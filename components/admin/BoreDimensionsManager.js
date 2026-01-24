@@ -1,248 +1,280 @@
-import React, { useState } from "react";
-// AANPASSING: Settings toegevoegd aan imports
+import React, { useState, useEffect } from "react";
 import {
-  Search,
-  Edit3,
-  Trash2,
   Plus,
+  Trash2,
   Save,
+  Search,
   Loader2,
-  X,
-  Settings,
+  AlertCircle,
+  CheckCircle,
+  Database,
+  Filter,
 } from "lucide-react";
-import { doc, setDoc, deleteDoc } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  doc,
+  setDoc,
+  deleteDoc,
+  serverTimestamp,
+} from "firebase/firestore";
 import { db, appId } from "../../config/firebase";
 
-const BoreDimensionsManager = ({ boreDimensions = [] }) => {
+const BoreDimensionsManager = () => {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  const [editingItem, setEditingItem] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
+  const [status, setStatus] = useState({ type: "", msg: "" });
 
-  // Filteren
-  const filteredItems = boreDimensions.filter(
-    (item) =>
-      item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      String(item.pn).includes(searchTerm) ||
-      String(item.dn).includes(searchTerm)
-  );
+  // Formulier state (PN is hier verwijderd)
+  const [formData, setFormData] = useState({
+    type: "", // Bijv. "DIN 2576"
+    diameter: "", // Bijv. "200"
+    specs: {}, // Dynamische velden (B1, B2, etc.)
+  });
 
-  const handleSave = async (e) => {
-    e.preventDefault();
+  // Dynamische velden voor boringen
+  const specFields = ["BoltCircle", "Holes", "HoleDiameter", "Weight"];
+
+  const COLLECTION_PATH = `artifacts/${appId}/public/data/bore_dimensions`;
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
     setLoading(true);
     try {
-      // Genereer ID als het een nieuwe is
-      let docId = editingItem.id;
-      if (isCreating) {
-        docId = `BORE_PN${editingItem.pn}_DN${editingItem.dn}`;
-      }
-
-      await setDoc(
-        doc(db, "artifacts", appId, "public", "data", "bore_dimensions", docId),
-        {
-          ...editingItem,
-          id: docId,
-        }
-      );
-
-      setEditingItem(null);
-      setIsCreating(false);
-      alert("✅ Opgeslagen!");
+      const querySnapshot = await getDocs(collection(db, COLLECTION_PATH));
+      const data = [];
+      querySnapshot.forEach((doc) => {
+        data.push({ id: doc.id, ...doc.data() });
+      });
+      setItems(data.sort((a, b) => a.id.localeCompare(b.id)));
     } catch (error) {
-      console.error("Fout bij opslaan:", error);
-      alert("Fout bij opslaan.");
+      console.error("Fout bij ophalen:", error);
+      setStatus({ type: "error", msg: "Kon data niet ophalen." });
     } finally {
       setLoading(false);
     }
   };
 
+  const handleSpecChange = (key, value) => {
+    setFormData((prev) => ({
+      ...prev,
+      specs: { ...prev.specs, [key]: value },
+    }));
+  };
+
   const handleDelete = async (id) => {
-    if (window.confirm("Zeker weten?")) {
-      try {
-        await deleteDoc(
-          doc(db, "artifacts", appId, "public", "data", "bore_dimensions", id)
-        );
-      } catch (e) {
-        console.error("Delete error:", e);
-      }
+    if (!window.confirm("Weet je zeker dat je deze boring wilt verwijderen?"))
+      return;
+    try {
+      await deleteDoc(doc(db, COLLECTION_PATH, id));
+      setItems((prev) => prev.filter((item) => item.id !== id));
+      setStatus({ type: "success", msg: "Item verwijderd." });
+    } catch (error) {
+      setStatus({ type: "error", msg: "Verwijderen mislukt." });
     }
   };
 
-  const startCreate = () => {
-    setIsCreating(true);
-    setEditingItem({
-      pn: "",
-      dn: "",
-      pcd: "",
-      holes: "",
-      thread: "",
-      bolt: "",
-    });
+  const handleSave = async () => {
+    if (!formData.type || !formData.diameter) {
+      setStatus({ type: "error", msg: "Vul Type en Diameter in." });
+      return;
+    }
+
+    // GENERATIE ID: TYPE_IDxxx (Zonder PN)
+    // Bijv: DIN_2576_ID200
+    const cleanType = formData.type.trim().replace(/\s+/g, "_").toUpperCase();
+    const cleanID = `ID${formData.diameter}`;
+    const docId = `${cleanType}_${cleanID}`;
+
+    try {
+      const dataToSave = {
+        type: formData.type,
+        diameter: formData.diameter,
+        lastUpdated: serverTimestamp(),
+        ...formData.specs,
+      };
+
+      await setDoc(doc(db, COLLECTION_PATH, docId), dataToSave);
+
+      // Update lokale lijst
+      setItems((prev) => {
+        const filtered = prev.filter((i) => i.id !== docId);
+        return [...filtered, { id: docId, ...dataToSave }].sort((a, b) =>
+          a.id.localeCompare(b.id)
+        );
+      });
+
+      setStatus({ type: "success", msg: "Boring opgeslagen!" });
+      // Reset formulier (behalve type, handig voor bulk invoer)
+      setFormData((prev) => ({ ...prev, diameter: "", specs: {} }));
+    } catch (error) {
+      console.error(error);
+      setStatus({ type: "error", msg: "Opslaan mislukt." });
+    }
   };
 
+  const filteredItems = items.filter((item) =>
+    item.id.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
-    <div className="flex h-full bg-slate-50 rounded-3xl overflow-hidden border border-slate-200">
-      {/* LINKER KOLOM: LIJST */}
-      <div className="w-1/3 bg-white border-r border-slate-200 flex flex-col">
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center">
-          <h3 className="font-black text-slate-700">Bore Dimensions</h3>
-          <button
-            onClick={startCreate}
-            className="bg-slate-900 text-white p-2 rounded-lg hover:bg-emerald-600 transition-colors"
+    <div className="space-y-6">
+      {/* Header & Status */}
+      <div className="flex justify-between items-center">
+        <h3 className="text-lg font-black text-slate-800 uppercase italic flex items-center gap-2">
+          <Database className="text-purple-600" /> Boring Manager
+        </h3>
+        {status.msg && (
+          <div
+            className={`px-4 py-2 rounded-xl text-xs font-bold ${
+              status.type === "error"
+                ? "bg-red-50 text-red-600"
+                : "bg-emerald-50 text-emerald-600"
+            }`}
           >
-            <Plus size={16} />
-          </button>
+            {status.msg}
+          </div>
+        )}
+      </div>
+
+      {/* Input Formulier */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+              Type Boring (bijv. DIN 2576)
+            </label>
+            <input
+              type="text"
+              value={formData.type}
+              onChange={(e) =>
+                setFormData({ ...formData, type: e.target.value })
+              }
+              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:border-purple-500 outline-none"
+              placeholder="Type..."
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+              Diameter (ID)
+            </label>
+            <input
+              type="number"
+              value={formData.diameter}
+              onChange={(e) =>
+                setFormData({ ...formData, diameter: e.target.value })
+              }
+              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:border-purple-500 outline-none"
+              placeholder="mm"
+            />
+          </div>
         </div>
-        <div className="p-4 bg-slate-50 border-b border-slate-200">
-          <div className="relative">
+
+        {/* Dynamische Specs */}
+        <div>
+          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+            Technische Specificaties
+          </label>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {specFields.map((field) => (
+              <div key={field}>
+                <input
+                  type="text"
+                  placeholder={field}
+                  value={formData.specs[field] || ""}
+                  onChange={(e) => handleSpecChange(field, e.target.value)}
+                  className="w-full p-2 text-xs border border-slate-200 rounded-lg focus:border-purple-500 outline-none"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <button
+          onClick={handleSave}
+          className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold uppercase text-xs tracking-widest flex items-center justify-center gap-2 transition-colors"
+        >
+          <Save size={16} /> Opslaan in Database
+        </button>
+      </div>
+
+      {/* Lijst Weergave */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="p-4 border-b border-slate-100 flex gap-4 bg-slate-50">
+          <div className="relative flex-1">
             <Search
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              className="absolute left-3 top-2.5 text-slate-400"
               size={16}
             />
             <input
-              className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none"
-              placeholder="Zoek PN of DN..."
+              type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Zoek boring..."
+              className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none"
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          {filteredItems.map((item) => (
-            <div
-              key={item.id}
-              onClick={() => {
-                setEditingItem(item);
-                setIsCreating(false);
-              }}
-              className={`p-3 rounded-xl cursor-pointer flex justify-between items-center transition-all ${
-                editingItem?.id === item.id
-                  ? "bg-slate-900 text-white"
-                  : "hover:bg-slate-100 text-slate-600"
-              }`}
-            >
-              <span className="text-xs font-bold">
-                PN{item.pn} - DN{item.dn}
-              </span>
-              <span className="text-[10px] opacity-60 font-mono">
-                PCD: {item.pcd}
-              </span>
+
+        <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
+          {loading ? (
+            <div className="p-10 text-center text-slate-400 flex flex-col items-center">
+              <Loader2 className="animate-spin mb-2" /> Laden...
             </div>
-          ))}
+          ) : filteredItems.length === 0 ? (
+            <div className="p-10 text-center text-slate-400 text-xs font-bold uppercase">
+              Geen boringen gevonden
+            </div>
+          ) : (
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest sticky top-0">
+                <tr>
+                  <th className="p-4">ID (Sleutel)</th>
+                  <th className="p-4">Type</th>
+                  <th className="p-4">ID</th>
+                  <th className="p-4">Specs</th>
+                  <th className="p-4 text-right">Actie</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredItems.map((item) => (
+                  <tr
+                    key={item.id}
+                    className="hover:bg-slate-50 transition-colors"
+                  >
+                    <td className="p-4 font-mono text-xs text-slate-500">
+                      {item.id}
+                    </td>
+                    <td className="p-4 font-bold text-slate-700">
+                      {item.type}
+                    </td>
+                    <td className="p-4 font-bold text-slate-700">
+                      {item.diameter}
+                    </td>
+                    <td className="p-4 text-xs text-slate-500">
+                      {Object.entries(item)
+                        .filter(([k]) => specFields.includes(k))
+                        .map(([k, v]) => `${k}: ${v}`)
+                        .join(", ")}
+                    </td>
+                    <td className="p-4 text-right">
+                      <button
+                        onClick={() => handleDelete(item.id)}
+                        className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
-      </div>
-
-      {/* RECHTER KOLOM: EDITOR */}
-      <div className="flex-1 bg-slate-50 p-8 flex items-center justify-center">
-        {editingItem ? (
-          <div className="bg-white p-8 rounded-3xl shadow-lg border border-slate-200 w-full max-w-lg animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-black text-slate-800">
-                {isCreating ? "Nieuwe Boormaat" : editingItem.id}
-              </h3>
-              {!isCreating && (
-                <button
-                  onClick={() => handleDelete(editingItem.id)}
-                  className="text-red-400 hover:text-red-600"
-                >
-                  <Trash2 size={20} />
-                </button>
-              )}
-            </div>
-
-            <form onSubmit={handleSave} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                    PN (Druk)
-                  </label>
-                  <input
-                    className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500"
-                    value={editingItem.pn}
-                    onChange={(e) =>
-                      setEditingItem({ ...editingItem, pn: e.target.value })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                    DN (Diameter)
-                  </label>
-                  <input
-                    className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold outline-none focus:border-emerald-500"
-                    value={editingItem.dn}
-                    onChange={(e) =>
-                      setEditingItem({ ...editingItem, dn: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                    PCD
-                  </label>
-                  <input
-                    className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
-                    value={editingItem.pcd}
-                    onChange={(e) =>
-                      setEditingItem({ ...editingItem, pcd: e.target.value })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                    Gaten
-                  </label>
-                  <input
-                    className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
-                    value={editingItem.holes}
-                    onChange={(e) =>
-                      setEditingItem({ ...editingItem, holes: e.target.value })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                    Draad (M)
-                  </label>
-                  <input
-                    className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500"
-                    value={editingItem.thread}
-                    onChange={(e) =>
-                      setEditingItem({ ...editingItem, thread: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-slate-100 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setEditingItem(null)}
-                  className="px-4 py-2 text-slate-400 font-bold hover:bg-slate-100 rounded-lg"
-                >
-                  Annuleren
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="bg-emerald-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-emerald-700 shadow-lg"
-                >
-                  {loading ? "Opslaan..." : "Opslaan"}
-                </button>
-              </div>
-            </form>
-          </div>
-        ) : (
-          <div className="text-center text-slate-300">
-            {/* Hier werd Settings gebruikt zonder import */}
-            <Settings size={64} className="mx-auto mb-4 opacity-20" />
-            <p className="font-bold">
-              Selecteer een item of maak een nieuwe aan
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );

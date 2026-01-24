@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, Suspense } from "react";
 import {
   Package,
   Database,
@@ -10,35 +10,32 @@ import {
   ArrowRight,
   ShieldAlert,
   ArrowLeft,
-  Upload,
-  MapPin,
-  List,
-  PenTool // Toegevoegd voor Label Designer
+  Loader2, // Toegevoegd voor laadscherm
 } from "lucide-react";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
 
-// Importeer alle sub-schermen
-import AdminProductManager from "./AdminProductManager";
-import AdminLocationsView from "./AdminLocationsView";
-import AdminMatrixManager from "./matrixmanager/AdminMatrixManager";
+// --- LAZY LOAD IMPORTS (Voorkomt wit scherm bij crash in sub-module) ---
+const AdminProductManager = React.lazy(() => import("./AdminProductManager"));
+const AdminLocationsView = React.lazy(() => import("./AdminLocationsView"));
+const AdminMatrixManager = React.lazy(() =>
+  import("./matrixmanager/AdminMatrixManager")
+);
+// Let op: Pad naar DigitalPlanningHub
+const DigitalPlanningHub = React.lazy(() =>
+  import("../digitalplanning/DigitalPlanningHub")
+);
+const AdminUsersView = React.lazy(() => import("./AdminUsersView"));
+const AdminMessagesView = React.lazy(() => import("./AdminMessagesView"));
+const AdminSettingsView = React.lazy(() => import("./AdminSettingsView"));
+const AdminDatabaseView = React.lazy(() => import("./AdminDatabaseView"));
 
-// Verwijs naar de algemene DigitalPlanningHub (één map omhoog)
-import DigitalPlanningHub from "../digitalplanning/DigitalPlanningHub";
-
-import AdminUsersView from "./AdminUsersView";
-import AdminMessagesView from "./AdminMessagesView";
-import AdminSettingsView from "./AdminSettingsView";
-import AdminDatabaseView from "./AdminDatabaseView.jsx"; // Let op .jsx extensie
-import AdminUploadView from "./AdminUploadView";
-import AdminProductListView from "./AdminProductListView";
-// NIEUW: Importeer de designer
-import AdminLabelDesigner from "./AdminLabelDesigner";
-
-
-const AdminDashboard = ({ navigate, onBack }) => {
+/**
+ * AdminDashboard V5.1 (Original Grid Layout + Lazy Loading + Mobile Fixes)
+ */
+const AdminDashboard = ({ onBack }) => {
   const { role } = useAdminAuth();
 
-  // Interne state voor navigatie (voorkomt crashes als 'navigate' prop mist)
+  // Interne state voor navigatie
   const [activeScreen, setActiveScreen] = useState(null);
 
   // De lijst met beheer-opties
@@ -51,15 +48,6 @@ const AdminDashboard = ({ navigate, onBack }) => {
       color: "bg-blue-50 border-blue-100",
       roles: ["admin", "engineer", "teamleader"],
       component: AdminProductManager,
-    },
-    {
-      id: "admin_product_list",
-      title: "Producten Lijst",
-      desc: "Snel overzicht van alle actieve producten.",
-      icon: <List size={24} className="text-indigo-600" />,
-      color: "bg-indigo-50 border-indigo-100",
-      roles: ["admin", "engineer"],
-      component: AdminProductListView,
     },
     {
       id: "admin_locations",
@@ -88,16 +76,6 @@ const AdminDashboard = ({ navigate, onBack }) => {
       roles: ["admin", "engineer"],
       component: DigitalPlanningHub,
     },
-    // NIEUW: Label Designer
-    {
-      id: "label_designer",
-      title: "Label Designer",
-      desc: "Ontwerp stickers en layouts.",
-      icon: <PenTool size={24} className="text-pink-600" />,
-      color: "bg-pink-50 border-pink-100",
-      roles: ["admin", "engineer"],
-      component: AdminLabelDesigner,
-    },
     {
       id: "admin_users",
       title: "Gebruikersbeheer",
@@ -106,15 +84,6 @@ const AdminDashboard = ({ navigate, onBack }) => {
       color: "bg-indigo-50 border-indigo-100",
       roles: ["admin"],
       component: AdminUsersView,
-    },
-    {
-      id: "admin_upload",
-      title: "Data Import",
-      desc: "Upload bulk data of migreer bestanden.",
-      icon: <Upload size={24} className="text-amber-600" />,
-      color: "bg-amber-50 border-amber-100",
-      roles: ["admin"],
-      component: AdminUploadView,
     },
     {
       id: "admin_messages",
@@ -147,38 +116,32 @@ const AdminDashboard = ({ navigate, onBack }) => {
 
   const menuItems = allItems.filter((item) => item.roles.includes(role));
 
-  // RENDER: HET ACTIEVE SUB-SCHERM
+  // --- RENDER: HET ACTIEVE SUB-SCHERM ---
   if (activeScreen) {
     const activeItem = menuItems.find((i) => i.id === activeScreen);
 
-    // Speciale afhandeling voor DigitalPlanningHub (heeft eigen onBack nodig om interne state te resetten)
+    // Speciale afhandeling voor DigitalPlanningHub (heeft eigen onBack nodig)
+    // We gebruiken Suspense hier direct om te voorkomen dat de hele app crasht
     if (activeItem && activeItem.id === "admin_digital_planning") {
-      return <DigitalPlanningHub onBack={() => setActiveScreen(null)} />;
-    }
-    
-    // Speciale afhandeling voor Label Designer (eigen onBack)
-    if (activeItem && activeItem.id === "label_designer") {
-        return <AdminLabelDesigner onBack={() => setActiveScreen(null)} />;
+      return (
+        <Suspense
+          fallback={
+            <div className="h-screen flex items-center justify-center">
+              <Loader2 className="animate-spin" />
+            </div>
+          }
+        >
+          <DigitalPlanningHub onBack={() => setActiveScreen(null)} />
+        </Suspense>
+      );
     }
 
-    const ActiveComponent =
-      activeItem?.component ||
-      (() => (
-        <div className="p-8 text-center text-red-500">
-          <h3 className="font-bold text-lg">Fout: Component niet geladen</h3>
-          <p>Kan module '{activeItem?.title}' niet vinden.</p>
-          <button
-            onClick={() => setActiveScreen(null)}
-            className="mt-4 px-4 py-2 bg-slate-200 rounded"
-          >
-            Terug
-          </button>
-        </div>
-      ));
+    const ActiveComponent = activeItem?.component;
 
     return (
-      <div className="flex flex-col h-full bg-slate-50 w-full animate-in fade-in zoom-in-95 duration-300">
-        <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shrink-0 sticky top-0 z-20">
+      <div className="flex flex-col h-[100dvh] bg-slate-50 w-full animate-in fade-in zoom-in-95 duration-300 overflow-hidden">
+        {/* Header van Sub-scherm */}
+        <div className="bg-white border-b border-slate-200 px-4 md:px-6 py-4 flex items-center justify-between shrink-0 sticky top-0 z-20">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setActiveScreen(null)}
@@ -190,7 +153,7 @@ const AdminDashboard = ({ navigate, onBack }) => {
               />
             </button>
             <div>
-              <h2 className="text-xl font-black text-slate-800 uppercase italic tracking-tight flex items-center gap-2">
+              <h2 className="text-lg md:text-xl font-black text-slate-800 uppercase italic tracking-tight flex items-center gap-2">
                 {activeItem?.icon} {activeItem?.title}
               </h2>
             </div>
@@ -200,50 +163,75 @@ const AdminDashboard = ({ navigate, onBack }) => {
           </div>
         </div>
 
+        {/* Content van Sub-scherm met Lazy Loading */}
         <div className="flex-1 overflow-auto p-0 md:p-6 w-full h-full relative">
-          <ActiveComponent navigate={setActiveScreen} onBack={() => setActiveScreen(null)}/>
+          <Suspense
+            fallback={
+              <div className="flex h-full flex-col items-center justify-center text-slate-400">
+                <Loader2 className="animate-spin mb-4" size={48} />
+                <p>Module laden...</p>
+              </div>
+            }
+          >
+            {ActiveComponent ? (
+              <ActiveComponent />
+            ) : (
+              <div className="p-8 text-center text-red-500">
+                <h3 className="font-bold text-lg">
+                  Fout: Component niet gevonden
+                </h3>
+                <button
+                  onClick={() => setActiveScreen(null)}
+                  className="mt-4 px-4 py-2 bg-slate-200 rounded"
+                >
+                  Terug
+                </button>
+              </div>
+            )}
+          </Suspense>
         </div>
       </div>
     );
   }
 
-  // RENDER: HOOFDMENU (Jouw Originele Layout + Scroll Fix)
+  // --- RENDER: HOOFDMENU (Jouw Originele Grid Layout) ---
   return (
-    // FIX: h-full en overflow-y-auto zorgen dat je kunt scrollen
-    <div className="flex flex-col items-center w-full h-full overflow-y-auto bg-slate-50 py-10 px-6 animate-in fade-in duration-500 custom-scrollbar text-left">
-      <div className="w-full max-w-7xl space-y-10">
-        <div className="flex flex-col items-center text-center border-b border-slate-200 pb-10 relative">
-          {/* Gebruik de navigate prop als onBack niet is meegegeven, of andersom */}
-          <button
-            onClick={() => navigate ? navigate("products") : onBack && onBack()} 
-            className="absolute left-0 top-2 text-slate-400 hover:text-slate-600 flex items-center gap-2 text-xs font-bold uppercase transition-colors"
-          >
-            <ArrowLeft size={16} /> Portal
-          </button>
-          
-          <div className="flex items-center gap-3 mb-4">
-            <h1 className="text-5xl font-black text-slate-900 tracking-tight uppercase italic">
+    <div className="flex flex-col items-center w-full h-[100dvh] py-6 md:py-10 px-4 md:px-6 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar text-left">
+      <div className="w-full max-w-7xl space-y-8 md:space-y-10">
+        {/* Header Sectie */}
+        <div className="flex flex-col items-center text-center border-b border-slate-200 pb-8 relative">
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="absolute left-0 top-1 text-slate-400 hover:text-slate-600 flex items-center gap-2 text-xs font-bold uppercase transition-colors"
+            >
+              <ArrowLeft size={16} /> Portal
+            </button>
+          )}
+          <div className="flex items-center gap-3 mb-2 md:mb-4 mt-6 md:mt-0">
+            <h1 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tight uppercase italic">
               Admin <span className="text-blue-600">Hub</span>
             </h1>
-            <div className="bg-slate-900 text-white px-4 py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg">
+            <div className="bg-slate-900 text-white px-3 py-1 md:px-4 md:py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg hidden sm:flex">
               <ShieldAlert size={14} className="text-emerald-400" />
               Ingelogd als: {role}
             </div>
           </div>
-          <p className="text-slate-500 font-bold text-lg max-w-2xl uppercase tracking-tighter">
+          <p className="text-slate-500 font-bold text-sm md:text-lg max-w-2xl uppercase tracking-tighter">
             Centrale beheeromgeving voor engineering en productie-instellingen.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-20">
+        {/* Grid Sectie */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6 pb-20">
           {menuItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => setActiveScreen(item.id)} // Interne navigatie gebruiken
-              className={`group flex flex-col p-8 rounded-[40px] border-2 text-left transition-all duration-500 transform hover:-translate-y-2 bg-white ${item.color} border-transparent shadow-sm hover:shadow-2xl hover:border-white`}
+              onClick={() => setActiveScreen(item.id)}
+              className={`group flex flex-col p-6 md:p-8 rounded-[30px] md:rounded-[40px] border-2 text-left transition-all duration-500 transform hover:-translate-y-2 bg-white ${item.color} border-transparent shadow-sm hover:shadow-2xl hover:border-white`}
             >
-              <div className="flex items-start justify-between mb-8 text-left">
-                <div className="p-5 bg-white rounded-3xl shadow-md group-hover:scale-110 group-hover:rotate-3 transition-all duration-500">
+              <div className="flex items-start justify-between mb-6 md:mb-8 text-left">
+                <div className="p-4 md:p-5 bg-white rounded-3xl shadow-md group-hover:scale-110 group-hover:rotate-3 transition-all duration-500">
                   {item.icon}
                 </div>
                 <ArrowRight
@@ -251,10 +239,10 @@ const AdminDashboard = ({ navigate, onBack }) => {
                   className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity"
                 />
               </div>
-              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight text-left">
+              <h3 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight text-left">
                 {item.title}
               </h3>
-              <p className="text-sm text-slate-500 font-medium mt-3 leading-relaxed opacity-80 text-left">
+              <p className="text-xs md:text-sm text-slate-500 font-medium mt-2 md:mt-3 leading-relaxed opacity-80 text-left">
                 {item.desc}
               </p>
             </button>

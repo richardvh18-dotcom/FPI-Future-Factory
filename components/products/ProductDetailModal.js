@@ -7,35 +7,35 @@ import {
   Loader2,
   Download,
   ExternalLink,
-  Database,
-  ShieldCheck,
-  Clock,
-  FileText,
   Target,
   Settings,
   Zap,
   Hammer,
-  UserCheck,
-  Paperclip,
+  FileText,
   ImageIcon,
   Layers,
-  ChevronDown,
   AlertCircle,
+  CircleDot, // Icoon voor boringen
 } from "lucide-react";
 import { doc, getDoc } from "firebase/firestore";
-import { db, appId } from "../../config/firebase";
+import { db } from "../../config/firebase";
 import { generateProductPDF } from "../../utils/pdfGenerator";
 
+const getAppId = () => {
+  if (typeof window !== "undefined" && window.__app_id) return window.__app_id;
+  return "fittings-app-v1";
+};
+
+const appId = getAppId();
+
 /**
- * ProductDetailModal V5.8: Engineering Master Sync
- * - UPDATE: Volgorde van tabbladen omgedraaid (Basis Info nu eerst).
- * - FIX: Voorkomt crash bij het renderen van Firestore Timestamps in 'Extra Specs'.
- * - FIX: Robuuste object-naar-string conversie voor onbekende database velden.
+ * ProductDetailModal V6.0: Bore Dimensions
+ * - Toevoeging: Aparte sectie voor Boring/Flens data in Maatvoering tab.
  */
 const ProductDetailModal = ({ product, onClose, userRole }) => {
-  // Veranderd naar 'basis' als standaard start-tab
   const [activeTab, setActiveTab] = useState("basis");
   const [liveSpecs, setLiveSpecs] = useState(null);
+  const [boreSpecs, setBoreSpecs] = useState(null); // NIEUW: State voor boringen
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -104,6 +104,8 @@ const ProductDetailModal = ({ product, onClose, userRole }) => {
         if (fitSocketSnap.exists())
           merged = { ...merged, ...fitSocketSnap.data() };
 
+        // NIEUW: Boringen apart ophalen en opslaan
+        let boreData = null;
         if (product.drilling && product.drilling !== "-") {
           const boreId = `${product.drilling.replace(
             /\s+/g,
@@ -120,9 +122,13 @@ const ProductDetailModal = ({ product, onClose, userRole }) => {
               boreId
             )
           );
-          if (boreSnap.exists()) Object.assign(merged, boreSnap.data());
+          if (boreSnap.exists()) {
+            boreData = boreSnap.data();
+            Object.assign(merged, boreData); // Ook in merged voor PDF/Totaaloverzicht
+          }
         }
 
+        setBoreSpecs(boreData); // Zet de aparte bore state
         setLiveSpecs(merged);
       } catch (err) {
         console.error("Data-integratie mislukt:", err);
@@ -184,7 +190,11 @@ const ProductDetailModal = ({ product, onClose, userRole }) => {
             FITTING_ORDER.map((f) => f.toLowerCase()).includes(lk) ||
             MOF_ORDER.map((m) => m.toLowerCase()).includes(lk) ||
             lk === "a1";
-          return !isKnown && !excludedKeys.includes(lk);
+
+          // NIEUW: Filter ook de bore keys eruit zodat ze niet dubbel staan
+          const isBore = boreSpecs && Object.keys(boreSpecs).includes(k);
+
+          return !isKnown && !isBore && !excludedKeys.includes(lk);
         })
         .map(([k, v]) => {
           let displayValue = v;
@@ -212,12 +222,12 @@ const ProductDetailModal = ({ product, onClose, userRole }) => {
 
   return (
     <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300">
-      <div className="bg-white w-full max-w-6xl rounded-[40px] shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[95vh] text-left">
+      <div className="bg-white w-full max-w-6xl rounded-[40px] shadow-2xl border border-slate-200 overflow-hidden flex flex-col h-[90vh] text-left">
         {/* MODAL HEADER */}
         <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
           <div className="text-left">
             <h2 className="text-3xl font-black text-slate-900 tracking-tighter italic uppercase leading-none">
-              {product.name}
+              {product.name || product.productCode}
             </h2>
             <div className="flex items-center gap-3 mt-2">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
@@ -238,13 +248,14 @@ const ProductDetailModal = ({ product, onClose, userRole }) => {
           </button>
         </div>
 
-        {/* TABS - Nu met Basis Info als eerste optie */}
+        {/* TABS */}
         <div className="flex px-8 bg-slate-50/50 border-b border-slate-100 shrink-0 overflow-x-auto no-scrollbar">
           <TabButton id="basis" label="1. Basis Info" icon={Package} />
           <TabButton id="maatvoering" label="2. Maatvoering" icon={Ruler} />
           <TabButton id="gereedschap" label="3. Gereedschappen" icon={Hammer} />
         </div>
 
+        {/* SCROLLABLE CONTENT */}
         <div className="flex-1 overflow-y-auto p-8 lg:p-12 custom-scrollbar bg-white text-left">
           {/* CONTENT: BASIS INFO */}
           {activeTab === "basis" && (
@@ -431,6 +442,36 @@ const ProductDetailModal = ({ product, onClose, userRole }) => {
                     </div>
                   </div>
 
+                  {/* NIEUW: BORING SECTIE */}
+                  {boreSpecs && (
+                    <div className="pt-8 border-t border-slate-100">
+                      <h4 className="text-[11px] font-black text-slate-900 uppercase tracking-[0.2em] italic flex items-center gap-2 border-l-4 border-purple-500 pl-4 mb-6">
+                        <CircleDot size={16} className="text-purple-500" />{" "}
+                        Boring & Flens Data
+                      </h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        {Object.entries(boreSpecs)
+                          .filter(
+                            ([key]) => !excludedKeys.includes(key.toLowerCase())
+                          )
+                          .map(([key, value]) => (
+                            <div
+                              key={key}
+                              className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex items-center justify-between shadow-sm"
+                            >
+                              <span className="text-[10px] font-black text-slate-400 uppercase">
+                                {key}
+                              </span>
+                              <span className="text-sm font-black text-slate-800">
+                                {value}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* OVERIGE VELDEN */}
                   {extraSpecs.length > 0 && (
                     <div className="pt-8 border-t border-slate-100">
                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic mb-4">

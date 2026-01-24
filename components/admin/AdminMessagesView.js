@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Mail,
   Send,
@@ -6,40 +6,130 @@ import {
   User,
   Clock,
   Inbox,
-  CheckCircle,
   Plus,
+  Loader2,
+  X,
 } from "lucide-react";
+import {
+  collection,
+  query,
+  onSnapshot,
+  orderBy,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { db, appId } from "../../config/firebase";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
 
-const AdminMessagesView = ({
-  messages,
-  onSendMessage,
-  onMarkRead,
-  onDelete,
-  onBack,
-}) => {
+const AdminMessagesView = ({ onBack }) => {
   const { user } = useAdminAuth();
+
+  // Data State
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // UI State
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [isComposing, setIsComposing] = useState(false);
+  const [viewMode, setViewMode] = useState("inbox"); // 'inbox' of 'sent'
 
   // Compose State
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
 
+  // 1. DATA FETCHING
+  useEffect(() => {
+    if (!appId) return;
+
+    const q = query(
+      collection(db, "artifacts", appId, "public", "data", "messages"),
+      orderBy("timestamp", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        // Fallback voor timestamp
+        timestamp: doc.data().timestamp?.toDate
+          ? doc.data().timestamp.toDate().toISOString()
+          : new Date().toISOString(),
+      }));
+      setMessages(msgs);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // 2. ACTIONS
+  const handleSendMessage = async (to, subject, body) => {
+    try {
+      await addDoc(
+        collection(db, "artifacts", appId, "public", "data", "messages"),
+        {
+          to,
+          from: user?.email,
+          fromName: user?.displayName || user?.email?.split("@")[0] || "Admin",
+          subject,
+          body,
+          timestamp: serverTimestamp(),
+          read: false,
+        }
+      );
+      return true;
+    } catch (e) {
+      console.error("Send error:", e);
+      return false;
+    }
+  };
+
+  const handleMarkRead = async (id) => {
+    try {
+      await updateDoc(
+        doc(db, "artifacts", appId, "public", "data", "messages", id),
+        {
+          read: true,
+          readAt: serverTimestamp(),
+        }
+      );
+    } catch (e) {
+      console.error("Mark read error:", e);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm("Zeker weten?")) return;
+    try {
+      await deleteDoc(
+        doc(db, "artifacts", appId, "public", "data", "messages", id)
+      );
+      if (selectedMessage?.id === id) setSelectedMessage(null);
+    } catch (e) {
+      console.error("Delete error:", e);
+    }
+  };
+
+  // 3. UI LOGICA
+
   // Filterberichten
-  const receivedMessages = messages.filter((m) => m.from !== user?.email);
+  const receivedMessages = messages.filter(
+    (m) => m.to === user?.email || m.to === "iedereen" || m.to === "admin"
+  );
   const sentMessages = messages.filter((m) => m.from === user?.email);
-  const [viewMode, setViewMode] = useState("inbox"); // 'inbox' of 'sent'
 
   const displayedMessages =
     viewMode === "inbox" ? receivedMessages : sentMessages;
 
-  const handleSend = async (e) => {
+  const handleSendForm = async (e) => {
     e.preventDefault();
     if (!to || !subject || !body) return alert("Vul alle velden in.");
 
-    const success = await onSendMessage(to, subject, body);
+    const success = await handleSendMessage(to, subject, body);
     if (success) {
       alert("Bericht verzonden!");
       setIsComposing(false);
@@ -54,13 +144,15 @@ const AdminMessagesView = ({
 
   const handleSelect = (msg) => {
     setSelectedMessage(msg);
-    if (!msg.read && msg.to !== "iedereen" && msg.from !== user?.email) {
-      onMarkRead(msg.id);
+    // Markeer als gelezen als het aan mij gericht is
+    if (!msg.read && (msg.to === user?.email || msg.to === "admin")) {
+      handleMarkRead(msg.id);
     }
   };
 
   // Helper voor datum weergave
   const formatDate = (isoString) => {
+    if (!isoString) return "-";
     const date = new Date(isoString);
     return date.toLocaleString("nl-NL", {
       day: "2-digit",
@@ -69,6 +161,13 @@ const AdminMessagesView = ({
       minute: "2-digit",
     });
   };
+
+  if (loading)
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="animate-spin text-slate-400" />
+      </div>
+    );
 
   return (
     <div className="h-full bg-slate-50 flex flex-col overflow-hidden">
@@ -200,7 +299,7 @@ const AdminMessagesView = ({
                   <X size={20} />
                 </button>
               </div>
-              <form onSubmit={handleSend} className="p-6 space-y-4">
+              <form onSubmit={handleSendForm} className="p-6 space-y-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
                     Aan
@@ -261,6 +360,12 @@ const AdminMessagesView = ({
                       <Clock size={12} />{" "}
                       {formatDate(selectedMessage.timestamp)}
                     </span>
+                    <button
+                      onClick={() => handleDelete(selectedMessage.id)}
+                      className="bg-red-50 text-red-500 px-3 py-1 rounded-lg text-xs font-bold hover:bg-red-100"
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">

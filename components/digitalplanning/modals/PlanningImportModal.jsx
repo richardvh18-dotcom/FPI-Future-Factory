@@ -1,486 +1,653 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
+  X,
   Upload,
   FileSpreadsheet,
+  AlertCircle,
   CheckCircle,
-  AlertTriangle,
-  Loader2,
-  X,
+  Calendar,
   ArrowRight,
-  Database,
-  Eye,
-  ChevronDown,
-  ChevronUp,
+  GitMerge,
+  RefreshCw,
+  Loader2, // <-- DEZE WAS VERGETEN, NU TOEGEVOEGD
 } from "lucide-react";
 import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  getDocs,
+  query,
+  where,
   writeBatch,
   doc,
-  collection,
-  serverTimestamp,
 } from "firebase/firestore";
-import { db } from "../../../config/firebase";
-
-// Helper om App ID op te halen
-const getAppId = () => {
-  if (typeof window !== "undefined" && window.__app_id) return window.__app_id;
-  return "fittings-app-v1";
-};
-
-// --- CDN LOADER VOOR XLSX (Magic Fix voor CodeSandbox) ---
-// Dit laadt de bibliotheek pas in als het nodig is, zonder installatie.
-const loadXLSX = async () => {
-  if (window.XLSX) return window.XLSX; // Al geladen?
-
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src =
-      "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
-    script.onload = () => resolve(window.XLSX);
-    script.onerror = () =>
-      reject(new Error("Kon Excel bibliotheek niet laden."));
-    document.head.appendChild(script);
-  });
-};
-
-// --- INTERNE CSV PARSER ---
-const parseCSV = (text) => {
-  const rows = [];
-  let currentRow = [];
-  let currentField = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        currentField += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      currentRow.push(currentField);
-      currentField = "";
-    } else if ((char === "\r" || char === "\n") && !inQuotes) {
-      if (char === "\r" && nextChar === "\n") i++;
-      currentRow.push(currentField);
-      rows.push(currentRow);
-      currentRow = [];
-      currentField = "";
-    } else {
-      currentField += char;
-    }
-  }
-  if (currentField || currentRow.length > 0) {
-    currentRow.push(currentField);
-    rows.push(currentRow);
-  }
-  return rows;
-};
-
-// --- HELPER: Excel Datum naar JS Date ---
-const excelDateToJSDate = (serial) => {
-  if (!serial) return new Date();
-  if (typeof serial === "string") return new Date(serial);
-  const utc_days = Math.floor(serial - 25569);
-  const utc_value = utc_days * 86400;
-  const date_info = new Date(utc_value * 1000);
-  return date_info;
-};
+import { db, appId } from "../../../config/firebase";
+import {
+  format,
+  subWeeks,
+  differenceInCalendarDays,
+  isValid,
+  parseISO,
+  getYear,
+} from "date-fns";
 
 const PlanningImportModal = ({ isOpen, onClose, onSuccess }) => {
   const [file, setFile] = useState(null);
   const [previewData, setPreviewData] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [step, setStep] = useState(1);
-  const [stats, setStats] = useState({ total: 0, pipes: 0, fittings: 0 });
-  const [showPreviewTable, setShowPreviewTable] = useState(false);
+  const [importing, setImporting] = useState(false);
 
-  if (!isOpen) return null;
+  // Cache voor checks
+  const [existingOrderIds, setExistingOrderIds] = useState(new Set());
+  const [existingOrderDocs, setExistingOrderDocs] = useState({});
+  const [dbProductIndex, setDbProductIndex] = useState([]);
+
+  // Overschrijf modus state
+  const [overwriteMode, setOverwriteMode] = useState(false);
+
+  const [stats, setStats] = useState({
+    total: 0,
+    new: 0,
+    skipped: 0,
+    updated: 0,
+  });
+
+  // REF voor de file input (FIX VOOR VERKENNER PROBLEEM)
+  const fileInputRef = useRef(null);
+
+  // 1. Haal bestaande orders op
+  useEffect(() => {
+    if (isOpen) {
+      const fetchExistingOrders = async () => {
+        try {
+          const q = query(
+            collection(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "digital_planning"
+            )
+          );
+          const snapshot = await getDocs(q);
+
+          const ids = new Set();
+          const docsMap = {};
+          const productIndex = [];
+
+          snapshot.docs.forEach((doc) => {
+            const data = doc.data();
+            if (data.orderId) {
+              ids.add(data.orderId);
+              docsMap[data.orderId] = doc.id;
+            }
+
+            const itemKey = (data.item || data.description || "")
+              .trim()
+              .toUpperCase();
+            if (itemKey && data.week) {
+              productIndex.push({
+                item: itemKey,
+                week: parseInt(data.week),
+              });
+            }
+          });
+
+          setExistingOrderIds(ids);
+          setExistingOrderDocs(docsMap);
+          setDbProductIndex(productIndex);
+        } catch (error) {
+          console.error("Fout bij ophalen bestaande orders:", error);
+        }
+      };
+      fetchExistingOrders();
+      setFile(null);
+      setPreviewData([]);
+      setStats({ total: 0, new: 0, skipped: 0, updated: 0 });
+      setOverwriteMode(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (file) {
+      parseCSV(file);
+    }
+  }, [overwriteMode]);
+
+  const getUrgencyStatus = (deliveryDateObj) => {
+    if (!deliveryDateObj || !isValid(deliveryDateObj))
+      return { color: "text-gray-500", label: "Onbekend" };
+
+    const today = new Date();
+    const daysDiff = differenceInCalendarDays(deliveryDateObj, today);
+
+    if (daysDiff <= 7) {
+      return {
+        color: "text-red-600 font-bold",
+        bg: "bg-red-50",
+        label: "Urgent (< 1 week)",
+      };
+    } else if (daysDiff <= 14) {
+      return {
+        color: "text-blue-600 font-bold",
+        bg: "bg-blue-50",
+        label: "Starten (< 2 weken)",
+      };
+    } else {
+      return { color: "text-slate-700", bg: "bg-white", label: "Gepland" };
+    }
+  };
 
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
     if (selectedFile) {
       setFile(selectedFile);
-
-      const fileType = selectedFile.name.split(".").pop().toLowerCase();
-
-      if (fileType === "csv") {
-        processCSVFile(selectedFile);
-      } else if (fileType === "xls" || fileType === "xlsx") {
-        processExcelFile(selectedFile);
-      } else {
-        setError("Niet ondersteund bestandstype. Gebruik .csv, .xls of .xlsx");
-      }
+      parseCSV(selectedFile);
     }
   };
 
-  // --- CSV VERWERKING ---
-  const processCSVFile = (file) => {
-    setLoading(true);
-    setError(null);
-    setShowPreviewTable(false);
+  // Functie om de onzichtbare input te activeren
+  const triggerFileUpload = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
 
+  const parseCSV = (file) => {
+    setLoading(true);
     const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target.result;
-        const rows = parseCSV(text);
-        processRows(rows, "csv");
-      } catch (err) {
-        console.error(err);
-        setError("Fout bij verwerken CSV: " + err.message);
-        setLoading(false);
+
+    reader.onload = (e) => {
+      const text = e.target.result;
+      const lines = text.split("\n");
+
+      let startIndex = 6;
+
+      const parsedRows = [];
+      let skippedCount = 0;
+      let newCount = 0;
+      let updateCount = 0;
+
+      for (let i = startIndex + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+
+        if (cols.length < 15) continue;
+
+        const rawMachine = cols[3]?.replace(/"/g, "").trim();
+        const rawDateString = cols[4]?.replace(/"/g, "").trim();
+        const rawWeek = cols[5]?.replace(/"/g, "").trim();
+        const orderId = cols[6]?.replace(/"/g, "").trim();
+        const project = cols[8]?.replace(/"/g, "").trim();
+        const itemCode = cols[10]?.replace(/"/g, "").trim();
+        const itemDesc = cols[11]?.replace(/"/g, "").trim();
+        const extraCode = cols[12]?.replace(/"/g, "").trim();
+        const drawing = cols[13]?.replace(/"/g, "").trim();
+        const planQty = cols[14]?.replace(/"/g, "").trim();
+
+        if (!orderId || !rawMachine) continue;
+
+        const exists = existingOrderIds.has(orderId);
+
+        if (exists && !overwriteMode) {
+          skippedCount++;
+          continue;
+        }
+
+        let deliveryDateObj = null;
+        let deliveryDateString = "";
+
+        if (rawDateString) {
+          const d = parseISO(rawDateString);
+          if (isValid(d)) {
+            deliveryDateObj = d;
+            deliveryDateString = format(d, "yyyy-MM-dd");
+          } else {
+            const d2 = new Date(rawDateString);
+            if (isValid(d2)) {
+              deliveryDateObj = d2;
+              deliveryDateString = format(d2, "yyyy-MM-dd");
+            }
+          }
+        }
+
+        let plannedStartString = "";
+        if (deliveryDateObj) {
+          const startDate = subWeeks(deliveryDateObj, 2);
+          plannedStartString = format(startDate, "yyyy-MM-dd");
+        }
+
+        const year = deliveryDateObj
+          ? getYear(deliveryDateObj)
+          : new Date().getFullYear();
+        const urgency = getUrgencyStatus(deliveryDateObj);
+
+        parsedRows.push({
+          machine: rawMachine,
+          deliveryDate: deliveryDateString,
+          plannedDate: plannedStartString,
+          week: parseInt(rawWeek) || 0,
+          year: year,
+          orderId: orderId,
+          project: project,
+          item: itemCode,
+          description: itemDesc,
+          productCode: extraCode,
+          drawing: drawing,
+          plan: parseInt(planQty) || 0,
+          status: "planned",
+          urgencyColor: urgency.color,
+          urgencyBg: urgency.bg,
+          isNew: !exists,
+          isUpdate: exists && overwriteMode,
+          docId: exists ? existingOrderDocs[orderId] : null,
+        });
+
+        if (!exists) newCount++;
+        if (exists && overwriteMode) updateCount++;
       }
-    };
-    reader.onerror = () => {
-      setError("Kon bestand niet lezen.");
+
+      const enrichedRows = parsedRows.map((row) => {
+        const currentItem = (row.description || row.item || "")
+          .trim()
+          .toUpperCase();
+        const currentWeek = row.week;
+        const foundWeeks = new Set();
+
+        dbProductIndex.forEach((p) => {
+          if (p.item === currentItem && p.week !== currentWeek)
+            foundWeeks.add(p.week);
+        });
+
+        parsedRows.forEach((p) => {
+          const pItem = (p.description || p.item || "").trim().toUpperCase();
+          const pWeek = p.week;
+          if (pItem === currentItem && pWeek !== currentWeek)
+            foundWeeks.add(pWeek);
+        });
+
+        const sortedWeeks = Array.from(foundWeeks).sort((a, b) => a - b);
+
+        return {
+          ...row,
+          optimizationHint:
+            sortedWeeks.length > 0 ? sortedWeeks.join(", ") : null,
+        };
+      });
+
+      enrichedRows.sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year;
+        if (a.week !== b.week) return a.week - b.week;
+        if (a.deliveryDate < b.deliveryDate) return -1;
+        if (a.deliveryDate > b.deliveryDate) return 1;
+        return 0;
+      });
+
+      setPreviewData(enrichedRows);
+      setStats({
+        total: lines.length - startIndex,
+        new: newCount,
+        skipped: skippedCount,
+        updated: updateCount,
+      });
       setLoading(false);
     };
+
     reader.readAsText(file);
   };
 
-  // --- EXCEL VERWERKING (VIA CDN) ---
-  const processExcelFile = async (file) => {
-    setLoading(true);
-    setError(null);
-    setShowPreviewTable(false);
-
-    try {
-      // Laad de bibliotheek dynamisch
-      const XLSX = await loadXLSX();
-
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = new Uint8Array(e.target.result);
-          const workbook = XLSX.read(data, { type: "array" });
-
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-
-          // Converteer naar Array van Arrays
-          const rows = XLSX.utils.sheet_to_json(worksheet, {
-            header: 1,
-            defval: "",
-          });
-
-          processRows(rows, "excel");
-        } catch (err) {
-          console.error(err);
-          setError("Fout bij lezen Excel data: " + err.message);
-          setLoading(false);
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    } catch (err) {
-      console.error(err);
-      setError("Kon Excel lezer niet laden. Controleer je internetverbinding.");
-      setLoading(false);
-    }
-  };
-
-  // --- CENTRALE RIJ VERWERKING ---
-  const processRows = (rows, type) => {
-    try {
-      // Validatie: Minimaal 8 regels (6 rommel + 1 header + data)
-      if (rows.length < 8) {
-        throw new Error("Bestand bevat geen geldige data (te weinig regels).");
-      }
-
-      const parsedOrders = [];
-      let pipeCount = 0;
-      let fitCount = 0;
-
-      // Loop door data (vanaf index 7)
-      for (let i = 7; i < rows.length; i++) {
-        const row = rows[i];
-
-        // Kolom 6 = Order Nummer (N200xxxx), skip als leeg
-        if (!row[6] || !String(row[6]).startsWith("N")) continue;
-
-        // Machine opschonen: 40BH16 -> BH16 (Kolom 3)
-        let machineRaw = String(row[3] || "");
-        let machineClean = machineRaw.replace(/^40/, "");
-
-        // Datum Formatteren (Kolom 4)
-        let dateObj = new Date();
-        if (type === "excel" && typeof row[4] === "number") {
-          dateObj = excelDateToJSDate(row[4]);
-        } else {
-          let dateStr = row[4];
-          dateObj = new Date(dateStr);
-          if (isNaN(dateObj.getTime())) dateObj = new Date();
-        }
-
-        // Item Info (Kolom 11)
-        const itemDesc = String(row[11] || "Onbekend Item");
-        const isPipe =
-          itemDesc.toUpperCase().includes("PIPE") ||
-          itemDesc.toUpperCase().includes("BUIS");
-
-        // Aantallen (Kolom 14)
-        const planVal = parseFloat(row[14] || 0);
-
-        if (isPipe) pipeCount++;
-        else fitCount++;
-
-        parsedOrders.push({
-          machine: machineClean, // Kolom 3
-          plannedDate: dateObj, // Kolom 4
-          weekNumber: parseInt(row[5]) || 0, // Kolom 5
-          orderId: row[6], // Kolom 6
-          poText: String(row[7] || ""), // Kolom 7
-          project: String(row[8] || ""), // Kolom 8
-          projectDesc: String(row[9] || ""), // Kolom 9
-          itemCode: row[10], // Kolom 10
-          item: itemDesc, // Kolom 11
-          drawing: String(row[13] || ""), // Kolom 13
-          plan: planVal, // Kolom 14
-          status: "pending",
-          importDate: new Date(),
-          isPipe: isPipe,
-        });
-      }
-
-      setPreviewData(parsedOrders);
-      setStats({
-        total: parsedOrders.length,
-        pipes: pipeCount,
-        fittings: fitCount,
-      });
-      setStep(2);
-      setLoading(false);
-    } catch (err) {
-      setError("Data verwerkingsfout: " + err.message);
-      setLoading(false);
-    }
-  };
-
   const handleImport = async () => {
-    setLoading(true);
-    const appId = getAppId();
-    const batchSize = 400;
+    if (previewData.length === 0) return;
+    setImporting(true);
 
     try {
-      let batch = writeBatch(db);
-      let count = 0;
-      let batchCount = 0;
+      const batch = writeBatch(db);
 
-      for (const order of previewData) {
-        const docId = `${order.orderId}_${
-          order.itemCode || Math.random().toString(36).substr(2, 5)
-        }`;
-        const docRef = doc(
-          db,
-          "artifacts",
-          appId,
-          "public",
-          "data",
-          "digital_planning",
-          docId
-        );
+      previewData.forEach((order) => {
+        const {
+          urgencyColor,
+          urgencyBg,
+          isNew,
+          isUpdate,
+          docId,
+          optimizationHint,
+          ...dbData
+        } = order;
 
-        const firestoreData = {
-          ...order,
-          plannedDate: serverTimestamp(),
-          importDate: serverTimestamp(),
+        const dataToSave = {
+          ...dbData,
+          optimizationNote: optimizationHint
+            ? `Ook in week: ${optimizationHint}`
+            : "",
+          source: "excel_import",
+          importedAt: serverTimestamp(),
         };
 
-        batch.set(docRef, firestoreData);
-        count++;
-
-        if (count >= batchSize) {
-          await batch.commit();
-          batch = writeBatch(db);
-          count = 0;
-          batchCount++;
-          console.log(`Batch ${batchCount} opgeslagen`);
+        if (isUpdate && docId) {
+          const ref = doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "digital_planning",
+            docId
+          );
+          batch.update(ref, dataToSave);
+        } else {
+          const ref = doc(
+            collection(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "digital_planning"
+            )
+          );
+          batch.set(ref, { ...dataToSave, createdAt: serverTimestamp() });
         }
-      }
+      });
 
-      if (count > 0) {
-        await batch.commit();
-      }
+      await batch.commit();
 
-      if (onSuccess) onSuccess();
+      onSuccess();
       onClose();
-    } catch (err) {
-      console.error("Firebase Fout:", err);
-      setError("Opslaan mislukt: " + err.message);
+      alert(`Import voltooid!\n${stats.new} Nieuw\n${stats.updated} Geüpdatet`);
+    } catch (error) {
+      console.error("Import error:", error);
+      alert("Er ging iets mis tijdens het importeren.");
     } finally {
-      setLoading(false);
+      setImporting(false);
     }
   };
 
+  if (!isOpen) return null;
+
   return (
-    <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-      <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+      <div className="bg-white w-full max-w-6xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] border border-slate-100">
         {/* Header */}
-        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
-          <div>
-            <h2 className="text-xl font-black text-slate-800 uppercase italic tracking-tight">
-              Planning Import
-            </h2>
-            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
-              Infor-LN Export (CSV / XLS / XLSX)
-            </p>
+        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-3xl">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-blue-100 text-blue-600 rounded-xl">
+              <FileSpreadsheet size={24} />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-slate-800 uppercase italic tracking-tighter">
+                Importeer Planning
+              </h2>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                Excel / CSV Upload + Optimalisatie Check
+              </p>
+            </div>
           </div>
           <button
             onClick={onClose}
             className="p-2 hover:bg-slate-200 rounded-full transition-colors"
           >
-            <X className="w-6 h-6 text-slate-400" />
+            <X size={24} className="text-slate-400" />
           </button>
         </div>
 
-        {/* Content (Scrollable) */}
-        <div className="p-8 overflow-y-auto">
-          {error && (
-            <div className="mb-6 bg-red-50 text-red-600 p-4 rounded-xl border border-red-100 flex items-center gap-3">
-              <AlertTriangle />
-              <span className="font-bold text-sm">{error}</span>
+        {/* Content */}
+        <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
+          {/* Upload Area - CLICK HANDLER FIX */}
+          {!file && (
+            <div
+              onClick={triggerFileUpload}
+              className="border-4 border-dashed border-slate-200 rounded-3xl p-12 text-center hover:border-blue-400 hover:bg-blue-50/50 transition-all group cursor-pointer"
+            >
+              {/* HIDDEN INPUT MET REF */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              <div className="flex flex-col items-center gap-4 group-hover:scale-105 transition-transform duration-300">
+                <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center shadow-sm">
+                  <Upload size={40} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-700">
+                    Klik hier om te uploaden
+                  </h3>
+                  <p className="text-sm text-slate-400 mt-1">
+                    Ondersteunt .csv en .xlsx (Kolommen D t/m P)
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
-          {step === 1 ? (
-            <div className="border-4 border-dashed border-slate-200 rounded-3xl p-10 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors relative cursor-pointer h-64">
-              <input
-                type="file"
-                accept=".csv, .xls, .xlsx"
-                onChange={handleFileChange}
-                className="absolute inset-0 opacity-0 cursor-pointer"
-              />
-              <div className="bg-blue-50 p-6 rounded-full mb-4 text-blue-600">
-                <Upload size={32} />
+          {/* Overwrite Toggle */}
+          <div className="flex items-center justify-end mb-4 px-2">
+            <label className="flex items-center gap-3 cursor-pointer select-none bg-slate-50 px-4 py-2 rounded-xl border border-slate-200 hover:border-blue-300 transition-colors">
+              <div
+                className={`w-10 h-5 rounded-full relative transition-colors ${
+                  overwriteMode ? "bg-blue-600" : "bg-slate-300"
+                }`}
+              >
+                <div
+                  className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${
+                    overwriteMode ? "left-6" : "left-1"
+                  }`}
+                />
               </div>
-              <h3 className="text-lg font-black text-slate-700 mb-2">
-                Sleep bestand of Klik
-              </h3>
-              <p className="text-sm text-slate-400 font-medium">
-                Ondersteunt: Excel & CSV (start op regel 7)
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <div className="bg-emerald-50 border border-emerald-100 p-6 rounded-2xl flex items-center gap-4">
-                <CheckCircle className="text-emerald-600 w-10 h-10" />
-                <div>
-                  <h4 className="font-black text-emerald-800 text-lg">
-                    Analyse Voltooid
-                  </h4>
-                  <p className="text-emerald-600 text-sm font-medium">
-                    {stats.total} orders gevonden
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                  <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                    Fittings
-                  </span>
-                  <p className="text-2xl font-black text-slate-800">
-                    {stats.fittings}
-                  </p>
-                </div>
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                  <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                    Pipes
-                  </span>
-                  <p className="text-2xl font-black text-slate-800">
-                    {stats.pipes}
-                  </p>
-                </div>
-              </div>
-
-              <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-100">
-                <p className="text-xs text-yellow-800 font-bold flex items-center gap-2">
-                  <Database size={14} />
-                  Data wordt toegevoegd aan de live planning.
-                </p>
-              </div>
-
-              {/* Preview / Controle Toggle */}
               <div>
-                <button
-                  onClick={() => setShowPreviewTable(!showPreviewTable)}
-                  className="w-full flex items-center justify-between p-4 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors font-bold text-slate-600 text-sm"
-                >
-                  <span className="flex items-center gap-2">
-                    <Eye size={16} /> Bekijk Voorbeeld (Eerste 5)
-                  </span>
-                  {showPreviewTable ? (
-                    <ChevronUp size={16} />
-                  ) : (
-                    <ChevronDown size={16} />
-                  )}
-                </button>
+                <span className="block text-xs font-black text-slate-700 uppercase">
+                  Overschrijf Bestaande
+                </span>
+                <span className="block text-[10px] text-slate-400 font-medium">
+                  Update orders met zelfde ID
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={overwriteMode}
+                onChange={(e) => setOverwriteMode(e.target.checked)}
+                className="hidden"
+              />
+            </label>
+          </div>
 
-                {showPreviewTable && (
-                  <div className="mt-2 border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 uppercase font-black">
-                        <tr>
-                          <th className="p-3">Order</th>
-                          <th className="p-3">Machine</th>
-                          <th className="p-3">Item</th>
-                          <th className="p-3 text-right">Plan</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {previewData.slice(0, 5).map((row, i) => (
-                          <tr key={i} className="hover:bg-blue-50/50">
-                            <td className="p-3 font-mono font-bold text-blue-600">
-                              {row.orderId}
-                            </td>
-                            <td className="p-3 font-bold text-slate-700">
-                              {row.machine}
-                            </td>
-                            <td
-                              className="p-3 text-slate-600 truncate max-w-[200px]"
-                              title={row.item}
-                            >
-                              {row.item}
-                            </td>
-                            <td className="p-3 font-bold text-right">
-                              {row.plan}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <div className="p-2 bg-slate-50 text-center text-[10px] text-slate-400 italic">
-                      ... en nog {stats.total - 5} regels
+          {loading && (
+            <div className="py-12 text-center">
+              <Loader2
+                className="animate-spin mx-auto text-blue-600 mb-4"
+                size={48}
+              />
+              <p className="text-slate-500 font-bold">Bestand analyseren...</p>
+            </div>
+          )}
+
+          {previewData.length > 0 && !loading && (
+            <div className="space-y-6">
+              {/* Stats Bar */}
+              <div className="grid grid-cols-4 gap-4">
+                <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 flex items-center gap-3">
+                  <CheckCircle className="text-emerald-600" />
+                  <div>
+                    <p className="text-2xl font-black text-emerald-700">
+                      {stats.new}
+                    </p>
+                    <p className="text-xs font-bold text-emerald-600 uppercase">
+                      Nieuw
+                    </p>
+                  </div>
+                </div>
+                {overwriteMode ? (
+                  <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3">
+                    <RefreshCw className="text-blue-600" />
+                    <div>
+                      <p className="text-2xl font-black text-blue-700">
+                        {stats.updated}
+                      </p>
+                      <p className="text-xs font-bold text-blue-600 uppercase">
+                        Updates
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex items-center gap-3">
+                    <AlertCircle className="text-amber-600" />
+                    <div>
+                      <p className="text-2xl font-black text-amber-700">
+                        {stats.skipped}
+                      </p>
+                      <p className="text-xs font-bold text-amber-600 uppercase">
+                        Geskipt
+                      </p>
                     </div>
                   </div>
                 )}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center gap-3 col-span-2">
+                  <Calendar className="text-slate-600" />
+                  <div>
+                    <p className="text-2xl font-black text-slate-700">
+                      Week {previewData.length > 0 ? previewData[0].week : "-"}{" "}
+                      -{" "}
+                      {previewData.length > 0
+                        ? previewData[previewData.length - 1].week
+                        : "-"}
+                    </p>
+                    <p className="text-xs font-bold text-slate-500 uppercase">
+                      Planning Range
+                    </p>
+                  </div>
+                </div>
               </div>
+
+              <div className="overflow-hidden rounded-2xl border border-slate-200">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="p-4">Status</th>
+                      <th className="p-4">Leverdatum</th>
+                      <th className="p-4">Week</th>
+                      <th className="p-4">Order</th>
+                      <th className="p-4">Machine</th>
+                      <th className="p-4">Item</th>
+                      <th className="p-4">Code</th>
+                      <th className="p-4 text-right">Aantal</th>
+                      <th className="p-4 text-orange-600">Optimalisatie</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {previewData.map((row, idx) => (
+                      <tr
+                        key={idx}
+                        className={`hover:bg-slate-50 ${row.urgencyBg || ""}`}
+                      >
+                        <td className="p-4">
+                          {row.isNew && (
+                            <span className="bg-emerald-500 text-white text-[10px] px-2 py-0.5 rounded font-black uppercase tracking-wider shadow-sm">
+                              NIEUW
+                            </span>
+                          )}
+                          {row.isUpdate && (
+                            <span className="bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded font-black uppercase tracking-wider shadow-sm">
+                              UPDATE
+                            </span>
+                          )}
+                        </td>
+                        <td
+                          className={`p-4 font-mono font-bold ${row.urgencyColor}`}
+                        >
+                          {row.deliveryDate || "-"}
+                        </td>
+                        <td className="p-4 font-bold text-slate-700">
+                          {row.week}
+                        </td>
+                        <td className="p-4 font-mono text-blue-600 font-bold">
+                          {row.orderId}
+                        </td>
+                        <td className="p-4 text-slate-600 font-bold">
+                          {row.machine}
+                        </td>
+                        <td
+                          className="p-4 text-slate-600 truncate max-w-[150px]"
+                          title={row.description}
+                        >
+                          {row.description || row.item}
+                        </td>
+                        <td className="p-4 font-mono text-xs font-bold bg-slate-100 rounded text-center">
+                          {row.productCode || "-"}
+                        </td>
+                        <td className="p-4 text-right font-black text-slate-800">
+                          {row.plan}
+                        </td>
+                        <td className="p-4">
+                          {row.optimizationHint && (
+                            <div className="flex items-center gap-2 text-orange-600 bg-orange-50 px-2 py-1 rounded-lg text-xs font-bold w-fit border border-orange-100">
+                              <GitMerge size={14} />
+                              <span>Week: {row.optimizationHint}</span>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {file && previewData.length === 0 && !loading && (
+            <div className="text-center py-12 text-slate-400">
+              <AlertCircle size={48} className="mx-auto mb-4 text-amber-400" />
+              <h3 className="text-lg font-bold text-slate-700">
+                Geen nieuwe orders gevonden
+              </h3>
+              <button
+                onClick={() => setFile(null)}
+                className="mt-4 text-blue-600 font-bold hover:underline"
+              >
+                Ander bestand proberen
+              </button>
             </div>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3 shrink-0">
-          <button
-            onClick={onClose}
-            className="px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-200 transition-colors text-sm"
-          >
-            Annuleren
-          </button>
-          {step === 2 && (
+        <div className="p-6 border-t border-slate-100 bg-slate-50 rounded-b-3xl flex justify-between items-center">
+          {file ? (
             <button
-              onClick={handleImport}
-              disabled={loading}
-              className="px-8 py-3 rounded-xl font-black text-white bg-blue-600 hover:bg-blue-700 transition-colors text-sm uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-blue-200 disabled:opacity-50"
+              onClick={() => {
+                setFile(null);
+                setPreviewData([]);
+              }}
+              className="text-slate-500 font-bold text-sm hover:text-slate-800 transition-colors"
             >
-              {loading ? <Loader2 className="animate-spin" /> : <ArrowRight />}
-              Bevestig Import
+              Annuleren
             </button>
+          ) : (
+            <div></div>
           )}
+
+          <button
+            onClick={handleImport}
+            disabled={previewData.length === 0 || importing}
+            className={`px-8 py-4 rounded-xl font-black uppercase text-sm tracking-widest flex items-center gap-3 shadow-lg transition-all ${
+              previewData.length === 0
+                ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                : "bg-blue-600 text-white hover:bg-blue-700 active:scale-95"
+            }`}
+          >
+            {importing ? (
+              <>
+                <Loader2 className="animate-spin" /> Importeren...
+              </>
+            ) : (
+              <>
+                Importeren <ArrowRight size={20} />
+              </>
+            )}
+          </button>
         </div>
       </div>
     </div>

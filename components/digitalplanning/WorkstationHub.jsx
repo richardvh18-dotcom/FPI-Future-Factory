@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { LogOut, Loader2 } from "lucide-react";
+import { useNavigate } from "react-router-dom"; // Toegevoegd voor navigatie fallback
+import { LogOut, Loader2, Menu, X, Layers, Clock, Tv } from "lucide-react";
 import {
   collection,
   query,
@@ -12,11 +13,9 @@ import {
   getDoc,
   serverTimestamp,
 } from "firebase/firestore";
-// Imports zonder extensies voor maximale compatibiliteit
 import { db } from "../../config/firebase";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
 
-// Imports van de nieuwe sub-componenten en logic
 import {
   WORKSTATIONS,
   getISOWeekInfo,
@@ -39,9 +38,25 @@ const getAppId = () => {
   return "fittings-app-v1";
 };
 
+// Machine Config
+const FITTING_MACHINES = [
+  "BM01",
+  "BH11",
+  "BH12",
+  "BH15",
+  "BH16",
+  "BH17",
+  "BH18",
+  "BH31",
+  "Mazak",
+  "Nabewerking",
+];
+const PIPE_MACHINES = ["BH05", "BH07", "BH08", "BH09"];
+
 const WorkstationHub = ({ initialStationId, onExit }) => {
   const { t } = useTranslation();
   const { user: currentUser } = useAdminAuth();
+  const navigate = useNavigate(); // Hook voor navigatie
 
   const [selectedStation, setSelectedStation] = useState(
     initialStationId || "BH11"
@@ -50,6 +65,9 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
   const [rawOrders, setRawOrders] = useState([]);
   const [rawProducts, setRawProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Mobiel menu state
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Modals & Selecties
   const [selectedOrder, setSelectedOrder] = useState(null);
@@ -61,7 +79,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
   const [itemToFinish, setItemToFinish] = useState(null);
 
   const currentAppId = getAppId();
-  // Check of dit een post-processing station is (Mazak, Nabewerking OF BM01)
   const isPostProcessing = [
     "Mazak",
     "Nabewerking",
@@ -73,13 +90,12 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
   useEffect(() => {
     if (initialStationId) {
       setSelectedStation(initialStationId);
-      // Zet default tab
       if (
         ["Mazak", "Nabewerking", "BM01", "Station BM01"].includes(
           initialStationId
         )
       ) {
-        setActiveTab("winding"); // Dit is de "Productie/Inspectie" tab
+        setActiveTab("winding");
       } else {
         setActiveTab("planning");
       }
@@ -91,7 +107,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
     if (!currentAppId) return;
     setLoading(true);
 
-    // Haal orders op
     const ordersRef = collection(
       db,
       "artifacts",
@@ -123,7 +138,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
       setLoading(false);
     });
 
-    // Haal producten op
     const unsubProds = onSnapshot(
       query(
         collection(
@@ -146,7 +160,7 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
     };
   }, [currentAppId]);
 
-  // Reminder Logic (Auto-check voor tijdelijke afkeur > 7 dagen)
+  // Reminder Logic
   useEffect(() => {
     const checkAndSendReminders = async () => {
       if (!currentAppId || !rawProducts.length) return;
@@ -156,7 +170,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
         const currentStationNorm = selectedStation.replace(/\D/g, "");
         const pMachineNorm = pMachine.replace(/\D/g, "");
 
-        // Check of item op DIT station is
         const isHere =
           p.currentStation === selectedStation ||
           pMachineNorm === currentStationNorm;
@@ -172,7 +185,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
 
       for (const item of overdueItems) {
         try {
-          // Stuur bericht naar messages collectie
           await addDoc(
             collection(
               db,
@@ -193,7 +205,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
             }
           );
 
-          // Markeer product als 'reminder sent'
           const productRef = doc(
             db,
             "artifacts",
@@ -212,7 +223,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
         }
       }
     };
-    // Check elke 2 seconden (in praktijk misschien minder vaak, maar dit is voor reactiviteit)
     const timer = setTimeout(checkAndSendReminders, 2000);
     return () => clearTimeout(timer);
   }, [rawProducts, currentAppId, selectedStation]);
@@ -227,7 +237,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
     const orderStats = {};
     rawProducts.forEach((p) => {
       if (!p.orderId) return;
-      // Afgekeurde items tellen niet mee voor 'gestart' -> Nog te doen gaat omhoog
       if (p.status === "rejected" || p.currentStep === "REJECTED") return;
 
       if (!orderStats[p.orderId])
@@ -264,7 +273,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
     if (!selectedStation) return [];
     const currentStationNorm = selectedStation.replace(/\D/g, "");
     return rawProducts.filter((p) => {
-      // Afkeur niet tonen, maar 'Tijdelijke afkeur' (HOLD_AREA) WEL tonen als het op dit station staat
       if (p.currentStep === "Finished" || p.currentStep === "REJECTED")
         return false;
 
@@ -292,6 +300,15 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
   }, [rawProducts, selectedStation]);
 
   // Handlers
+  const handleBack = () => {
+    if (onExit) {
+      onExit();
+    } else {
+      // Fallback: ga naar portal als er geen parent exit handler is
+      navigate("/portal");
+    }
+  };
+
   const handleStartProduction = async (
     order,
     customLotNumber,
@@ -352,7 +369,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
       }
 
       if (overflowItems.length > 0) {
-        // Log overproductie
         await addDoc(
           collection(
             db,
@@ -460,7 +476,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
           timestamp: new Date().toISOString(),
         };
         updates.currentStep = "HOLD_AREA";
-        // Behoud huidig station voor zichtbaarheid
       } else if (status === "rejected") {
         updates.status = "rejected";
         updates.currentStep = "REJECTED";
@@ -480,12 +495,10 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
     }
   };
 
-  // Deze handler bepaalt wat er gebeurt als je op 'Klaar/Verder' klikt
   const handleProcessUnit = async (product) => {
     if (!currentAppId) return;
     const stationCheck = String(selectedStation).toLowerCase();
 
-    // Voor Nabewerking, Mazak EN BM01: Open direct de finish modal
     if (
       stationCheck === "nabewerking" ||
       stationCheck === "mazak" ||
@@ -497,7 +510,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
       return;
     }
 
-    // Voor BH stations: Ga naar 'Lossen'
     try {
       const productRef = doc(
         db,
@@ -544,7 +556,6 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
   };
 
   const handleActiveUnitClick = (unit) => {
-    // Probeer order data te vinden
     const parentOrder = rawOrders.find((o) => o.orderId === unit.orderId);
     if (parentOrder && parentOrder.linkedProductId) {
       handleOpenProductInfo(parentOrder.linkedProductId);
@@ -560,81 +571,167 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
     }
   };
 
-  // Render Logic
   return (
-    <div className="flex flex-col w-full h-full bg-gray-50/50">
+    // FIX SCROLL: h-[100dvh] zorgt voor volledige mobiele hoogte.
+    <div className="flex flex-col w-full h-[100dvh] bg-gray-50/50">
+      {/* HEADER */}
       <div className="bg-white border-b border-gray-200 sticky top-0 z-30 shadow-sm">
         <div className="w-full px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
+            {/* Linkerkant: Terug & Titel */}
             <div className="flex items-center">
-              {onExit && (
-                <button
-                  onClick={onExit}
-                  className="mr-4 px-4 py-2 bg-white border border-gray-200 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2 font-bold text-xs uppercase tracking-wider"
-                >
-                  <LogOut className="w-4 h-4" /> Terug naar Overzicht
-                </button>
-              )}
-              <span className="text-xl font-black text-gray-900 italic tracking-tight">
+              {/* ALTIJD zichtbaar: Back knop met fallback */}
+              <button
+                onClick={handleBack}
+                className="mr-2 sm:mr-4 px-3 py-1.5 sm:px-4 sm:py-2 bg-white border border-gray-200 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2 font-bold text-[10px] sm:text-xs uppercase tracking-wider"
+              >
+                <LogOut className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">Terug</span>
+              </button>
+              <span className="text-lg sm:text-xl font-black text-gray-900 italic tracking-tight truncate max-w-[150px] sm:max-w-none">
                 {WORKSTATIONS.find((w) => w.id === selectedStation)?.name ||
                   selectedStation}
               </span>
             </div>
-            <nav className="flex space-x-1 bg-gray-100 p-1 rounded-xl">
-              {!isPostProcessing && (
+
+            {/* Rechterkant: Navigatie Menu */}
+            <div className="flex items-center">
+              {/* Desktop Tabs (Verborgen op mobiel) */}
+              <nav className="hidden md:flex space-x-1 bg-gray-100 p-1 rounded-xl">
+                {!isPostProcessing && (
+                  <button
+                    onClick={() => setActiveTab("planning")}
+                    className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${
+                      activeTab === "planning"
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    Planning
+                  </button>
+                )}
                 <button
-                  onClick={() => setActiveTab("planning")}
-                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase ${
-                    activeTab === "planning"
+                  onClick={() => setActiveTab("winding")}
+                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${
+                    activeTab === "winding"
                       ? "bg-white text-blue-600 shadow-sm"
-                      : "text-gray-500"
+                      : "text-gray-500 hover:text-gray-700"
                   }`}
                 >
-                  Planning
+                  {selectedStation === "BM01" ||
+                  selectedStation === "Station BM01"
+                    ? "Inspectie"
+                    : "Productie"}
                 </button>
-              )}
-              <button
-                onClick={() => setActiveTab("winding")}
-                className={`px-4 py-2 rounded-lg text-xs font-black uppercase ${
-                  activeTab === "winding"
-                    ? "bg-white text-blue-600 shadow-sm"
-                    : "text-gray-500"
-                }`}
-              >
-                {selectedStation === "BM01" ||
-                selectedStation === "Station BM01"
-                  ? "Inspectie"
-                  : "Productie"}
-              </button>
-              {!["BM01", "Station BM01", "Mazak", "Nabewerking"].includes(
-                selectedStation
-              ) && (
+                {!["BM01", "Station BM01", "Mazak", "Nabewerking"].includes(
+                  selectedStation
+                ) && (
+                  <button
+                    onClick={() => setActiveTab("lossen")}
+                    className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${
+                      activeTab === "lossen"
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    Lossen
+                  </button>
+                )}
                 <button
-                  onClick={() => setActiveTab("lossen")}
-                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase ${
-                    activeTab === "lossen"
+                  onClick={() => setActiveTab("terminal")}
+                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${
+                    activeTab === "terminal"
                       ? "bg-white text-blue-600 shadow-sm"
-                      : "text-gray-500"
+                      : "text-gray-500 hover:text-gray-700"
                   }`}
                 >
-                  Lossen
+                  Terminal
                 </button>
-              )}
-              <button
-                onClick={() => setActiveTab("terminal")}
-                className={`px-4 py-2 rounded-lg text-xs font-black uppercase ${
-                  activeTab === "terminal"
-                    ? "bg-white text-blue-600 shadow-sm"
-                    : "text-gray-500"
-                }`}
-              >
-                Terminal
-              </button>
-            </nav>
+              </nav>
+
+              {/* Mobiel Hamburger Menu (Alleen zichtbaar op mobiel) */}
+              <div className="md:hidden relative ml-2">
+                <button
+                  onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                  className="p-2 bg-gray-100 rounded-lg text-gray-600 active:bg-gray-200"
+                >
+                  {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+                </button>
+
+                {/* Dropdown Content */}
+                {isMobileMenuOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-200 p-2 flex flex-col gap-1 z-50 animate-in slide-in-from-top-2">
+                    {!isPostProcessing && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("planning");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`px-4 py-3 rounded-lg text-xs font-black uppercase text-left w-full ${
+                          activeTab === "planning"
+                            ? "bg-blue-50 text-blue-600"
+                            : "text-gray-500"
+                        }`}
+                      >
+                        Planning
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setActiveTab("winding");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`px-4 py-3 rounded-lg text-xs font-black uppercase text-left w-full ${
+                        activeTab === "winding"
+                          ? "bg-blue-50 text-blue-600"
+                          : "text-gray-500"
+                      }`}
+                    >
+                      {selectedStation === "BM01" ||
+                      selectedStation === "Station BM01"
+                        ? "Inspectie"
+                        : "Productie"}
+                    </button>
+                    {!["BM01", "Station BM01", "Mazak", "Nabewerking"].includes(
+                      selectedStation
+                    ) && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("lossen");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`px-4 py-3 rounded-lg text-xs font-black uppercase text-left w-full ${
+                          activeTab === "lossen"
+                            ? "bg-blue-50 text-blue-600"
+                            : "text-gray-500"
+                        }`}
+                      >
+                        Lossen
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setActiveTab("terminal");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`px-4 py-3 rounded-lg text-xs font-black uppercase text-left w-full ${
+                        activeTab === "terminal"
+                          ? "bg-blue-50 text-blue-600"
+                          : "text-gray-500"
+                      }`}
+                    >
+                      Terminal
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
-      <div className="flex-1 overflow-hidden w-full p-4 sm:p-6 lg:p-8">
+
+      {/* CONTENT AREA */}
+      <div className="flex-1 overflow-y-auto w-full p-2 sm:p-6 lg:p-8">
         {loading ? (
           <div className="flex flex-col justify-center items-center h-full">
             <Loader2 className="animate-spin rounded-full h-12 w-12 text-blue-600 mb-4" />
@@ -659,8 +756,7 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
             {activeTab === "winding" && (
               <ActiveProductionView
                 activeUnits={activeUnitsHere}
-                // Geen smart suggestions nodig bij post-processing
-                smartSuggestions={isPostProcessing ? [] : []} // Zet tijdelijk uit of gebruik derived data indien nodig
+                smartSuggestions={isPostProcessing ? [] : []}
                 selectedStation={selectedStation}
                 onProcessUnit={handleProcessUnit}
                 onClickUnit={handleActiveUnitClick}
@@ -687,6 +783,8 @@ const WorkstationHub = ({ initialStationId, onExit }) => {
           </>
         )}
       </div>
+
+      {/* MODALS */}
       <ProductionStartModal
         order={selectedOrder}
         isOpen={showStartModal}
