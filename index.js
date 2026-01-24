@@ -1,18 +1,30 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "./styles.css"; // Zorg dat styles als eerste geladen worden
+import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import reportWebVitals from "./reportWebVitals";
+import ErrorBoundary from "./components/ErrorBoundary"; // <--- HIER importeren
+import "./styles.css";
 
-// Initialiseer de root
+// CRUCIAAL: Importeer de firebase configuratie
+import "./config/firebase";
+
+// Importeer i18n configuratie (indien aanwezig)
+import "./i18n";
+
 const root = ReactDOM.createRoot(document.getElementById("root"));
 
-// Render de applicatie binnen StrictMode
 root.render(
   <React.StrictMode>
-    <App />
+    {/* De ErrorBoundary staat helemaal buitenom. 
+      Als App of Router crasht, vangt deze component het op.
+    */}
+    <ErrorBoundary>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>
 );
 
-// Performance meting
 reportWebVitals();
