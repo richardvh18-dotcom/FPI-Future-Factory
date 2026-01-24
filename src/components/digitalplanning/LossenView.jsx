@@ -1,445 +1,467 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { 
-  Package, 
-  ArrowRight, 
-  CheckCircle, 
-  Clock, 
-  AlertTriangle,
+import React, { useState, useEffect, useMemo } from "react";
+import {
   Search,
-  Truck,
-  Wrench,
-  Monitor,
-  X,
-  MessageSquare,
+  Box,
+  CheckCircle,
+  AlertTriangle,
+  XCircle,
+  ArrowRight,
   Ruler,
-  AlertOctagon,
   Save,
-  ChevronDown
-} from 'lucide-react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../../config/firebase';
+  X,
+  FileText,
+  AlertOctagon,
+  HelpCircle
+} from "lucide-react";
+import { doc, updateDoc, serverTimestamp, addDoc, collection } from "firebase/firestore";
+import { db } from "../../config/firebase.js";
 
-// Helper om machinenummers te normaliseren
-const normalizeMachine = (m) => {
-  if (!m) return "";
-  return String(m).replace(/\D/g, "") || String(m); 
-};
-
-// Lijst met afkeur redenen
+// Redenen voor afkeur
 const REJECTION_REASONS = [
-  "TF te dun",
-  "TW te dun",
-  "Verkeerde Moflengte",
-  "Verkeerd Label",
-  "Visuele Afkeur",
-  "Beschadigingen"
+  "Maatvoering onjuist",
+  "Beschadiging",
+  "Luchtbellen / Blaasjes",
+  "Kleurafwijking",
+  "Vervuiling",
+  "Wanddikte te dun",
+  "Anders, zie opmerking"
 ];
 
-/**
- * MODAL: De Operator Actie Pop-up
- * Hier vult de operator metingen, status en opmerkingen in.
- */
-const UnloadActionModal = ({ item, currentStation, onClose, onConfirm, isProcessing }) => {
-  const [status, setStatus] = useState('ok'); // 'ok', 'temp_reject', 'reject'
-  const [destination, setDestination] = useState('');
-  const [rejectionReason, setRejectionReason] = useState('');
-  const [measurements, setMeasurements] = useState({
-    tf: '',
-    tw: '',
-    twcb: '',
-    twtb: ''
-  });
-  const [comments, setComments] = useState('');
+const UnloadModal = ({ product, onClose, onProcess }) => {
+  const [status, setStatus] = useState("completed"); // 'completed', 'temp_reject', 'rejected'
+  const [measurements, setMeasurements] = useState({ TF: "", TW: "", Twcb: "", Twtb: "" });
+  const [selectedReasons, setSelectedReasons] = useState([]);
+  const [note, setNote] = useState("");
+  const [errors, setErrors] = useState({});
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  // Bepaal welke meetvelden nodig zijn op basis van de naam
-  const itemName = (item.item || '').toUpperCase();
-  const showTF = itemName.includes('FL') || itemName.includes('FLANGE'); // Flenzen
-  const showCB = itemName.includes('CB'); // CB producten
-  const showTB = itemName.includes('TB'); // TB producten
-  const showTW = showCB || showTB; // Bij TB en CB moet ook TW gemeten worden
+  // Bepaal of het een 'FL' product is (Flens)
+  const isFL = useMemo(() => (product?.item || "").toUpperCase().includes("FL"), [product]);
 
-  // Automatische bestemming bepalen bij openen of statuswissel
-  useEffect(() => {
-    if (status === 'temp_reject') {
-      setDestination('HOLD'); 
-    } else if (status === 'reject') {
-      setDestination('REJECTED');
+  // Validatie functie
+  const validate = () => {
+    const newErrors = {};
+
+    // 1. Meetgegevens validatie
+    if (isFL) {
+      if (!measurements.TF) newErrors.TF = "TF is verplicht voor FL producten";
     } else {
-      // Standaard logica voor OK producten
-      const stationNorm = normalizeMachine(currentStation);
-      
-      // Groep 1: BH16, 18, 31 -> Altijd naar Nabewerking
-      if (['16', '18', '31'].includes(stationNorm)) {
-        setDestination('NABW');
-      } 
-      // Groep 2: BH11, 12, 15, 17 -> Mazak (indien FL) anders Nabewerking
-      else if (['11', '12', '15', '17'].includes(stationNorm)) {
-        if (showTF) setDestination('MAZAK');
-        else setDestination('NABW');
-      } 
-      // Fallback
-      else {
-        setDestination('NABW'); 
+      if (!measurements.TW) newErrors.TW = "TW is verplicht";
+    }
+
+    // 2. Afkeur redenen validatie
+    if (status !== "completed") {
+      if (selectedReasons.length === 0) {
+        newErrors.reasons = "Selecteer minimaal één reden voor afkeur";
       }
     }
-  }, [status, currentStation, showTF]);
 
-  const handleSubmit = () => {
-    // Validatie: Reden verplicht bij afkeur
-    if ((status === 'reject' || status === 'temp_reject') && !rejectionReason) {
-      alert("Selecteer een reden voor de afkeur.");
-      return;
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async () => {
+    if (!validate()) return;
+    setIsProcessing(true);
+
+    try {
+      const payload = {
+        measurements: { ...measurements }, // Sla metingen op
+        note: note
+      };
+
+      // Voeg afkeur info toe indien van toepassing
+      if (status !== "completed") {
+        payload.inspection = {
+          status: status === "temp_reject" ? "Tijdelijke afkeur" : "Afkeur",
+          reasons: selectedReasons,
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      await onProcess(product, status, payload);
+      onClose();
+    } catch (err) {
+      console.error(err);
+      alert("Er ging iets mis bij het opslaan.");
+    } finally {
+      setIsProcessing(false);
     }
+  };
 
-    onConfirm({
-      itemId: item.id,
-      status,
-      destination,
-      measurements,
-      comments,
-      rejectionReason
-    });
+  const toggleReason = (reason) => {
+    setSelectedReasons(prev => 
+      prev.includes(reason) 
+        ? prev.filter(r => r !== reason) 
+        : [...prev, reason]
+    );
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh] overflow-hidden">
         
         {/* Header */}
-        <div className="bg-slate-50 p-6 border-b border-slate-200 flex justify-between items-center">
+        <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex justify-between items-center">
           <div>
-            <h3 className="text-xl font-black text-slate-800 uppercase italic tracking-tight">Product Lossen</h3>
-            <p className="text-sm font-bold text-blue-600 mt-1">{item.lotNumber}</p>
-            <p className="text-xs text-slate-500 truncate max-w-md">{item.item}</p>
+            <h3 className="text-xl font-black text-slate-800">Product Lossen & Controleren</h3>
+            <p className="text-sm text-slate-500 font-mono">{product.lotNumber} • {product.item}</p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-            <X className="w-6 h-6 text-slate-400" />
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full">
+            <X size={24} className="text-slate-400" />
           </button>
         </div>
 
-        <div className="p-6 overflow-y-auto custom-scrollbar space-y-6">
+        {/* Content */}
+        <div className="p-6 overflow-y-auto custom-scrollbar space-y-8">
           
-          {/* 1. STATUS KEUZE */}
+          {/* 1. Status Selectie */}
           <div>
-            <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3 block">Beoordeling</label>
-            <div className="grid grid-cols-3 gap-3">
-              <button 
-                onClick={() => setStatus('ok')}
-                className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${status === 'ok' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 hover:border-slate-300 text-slate-500'}`}
+            <label className="block text-xs font-bold uppercase text-slate-400 mb-3 tracking-wider">Beoordeling</label>
+            <div className="grid grid-cols-3 gap-4">
+              <button
+                onClick={() => setStatus("completed")}
+                className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
+                  status === "completed" 
+                    ? "border-green-500 bg-green-50 text-green-700" 
+                    : "border-slate-100 hover:border-green-200 text-slate-400"
+                }`}
               >
-                <CheckCircle size={24} />
-                <span className="font-bold text-sm">OK</span>
+                <CheckCircle size={32} />
+                <span className="font-bold text-sm">Akkoord</span>
               </button>
 
-              <button 
-                onClick={() => setStatus('temp_reject')}
-                className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${status === 'temp_reject' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-100 hover:border-slate-300 text-slate-500'}`}
+              <button
+                onClick={() => setStatus("temp_reject")}
+                className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
+                  status === "temp_reject" 
+                    ? "border-orange-500 bg-orange-50 text-orange-700" 
+                    : "border-slate-100 hover:border-orange-200 text-slate-400"
+                }`}
               >
-                <AlertTriangle size={24} />
+                <AlertTriangle size={32} />
                 <span className="font-bold text-sm">Tijdelijke Afkeur</span>
+                <span className="text-[10px] uppercase opacity-75">(Reparatie)</span>
               </button>
 
-              <button 
-                onClick={() => setStatus('reject')}
-                className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${status === 'reject' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-100 hover:border-slate-300 text-slate-500'}`}
+              <button
+                onClick={() => setStatus("rejected")}
+                className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
+                  status === "rejected" 
+                    ? "border-red-500 bg-red-50 text-red-700" 
+                    : "border-slate-100 hover:border-red-200 text-slate-400"
+                }`}
               >
-                <AlertOctagon size={24} />
-                <span className="font-bold text-sm">Definitieve Afkeur</span>
+                <XCircle size={32} />
+                <span className="font-bold text-sm">Afkeur</span>
+                <span className="text-[10px] uppercase opacity-75">(Definitief)</span>
               </button>
             </div>
           </div>
 
-          {/* 1b. REDEN KEUZE (Alleen bij afkeur) */}
-          {(status === 'temp_reject' || status === 'reject') && (
-            <div className="bg-red-50/50 p-4 rounded-xl border border-red-100 animate-in slide-in-from-top-2">
-               <label className="text-xs font-black text-red-400 uppercase tracking-widest mb-3 block">
-                 Reden van {status === 'temp_reject' ? 'tijdelijke ' : ''}afkeur
-               </label>
-               <div className="grid grid-cols-2 gap-2">
-                 {REJECTION_REASONS.map(reason => (
-                   <button
-                     key={reason}
-                     onClick={() => setRejectionReason(reason)}
-                     className={`p-3 rounded-lg text-xs font-bold text-left transition-colors flex items-center justify-between ${rejectionReason === reason ? 'bg-red-600 text-white' : 'bg-white text-slate-600 hover:bg-red-50 border border-slate-100'}`}
-                   >
-                     {reason}
-                     {rejectionReason === reason && <CheckCircle size={14} />}
-                   </button>
-                 ))}
-               </div>
+          {/* 2. Meetgegevens */}
+          <div className="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
+            <div className="flex items-center gap-2 mb-4">
+              <Ruler className="text-blue-600" size={20} />
+              <h4 className="font-bold text-blue-900">Verplichte Metingen</h4>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {isFL ? (
+                // FLENS (FL) Specifiek
+                <div className="col-span-2">
+                  <label className="block text-xs font-bold text-blue-700 mb-1">
+                    TF (Flensdikte) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    className={`w-full p-3 border rounded-lg outline-none font-mono ${errors.TF ? "border-red-500 bg-red-50" : "border-blue-200 focus:border-blue-500"}`}
+                    placeholder="Invoeren..."
+                    value={measurements.TF}
+                    onChange={(e) => {
+                      setMeasurements({ ...measurements, TF: e.target.value });
+                      if (errors.TF) setErrors({ ...errors, TF: null });
+                    }}
+                  />
+                  {errors.TF && <p className="text-xs text-red-500 mt-1 font-bold">{errors.TF}</p>}
+                </div>
+              ) : (
+                // STANDAARD (Niet-FL)
+                <>
+                  <div className="col-span-2 sm:col-span-2">
+                    <label className="block text-xs font-bold text-blue-700 mb-1">
+                      TW (Wanddikte) <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      className={`w-full p-3 border rounded-lg outline-none font-mono ${errors.TW ? "border-red-500 bg-red-50" : "border-blue-200 focus:border-blue-500"}`}
+                      placeholder="Invoeren..."
+                      value={measurements.TW}
+                      onChange={(e) => {
+                        setMeasurements({ ...measurements, TW: e.target.value });
+                        if (errors.TW) setErrors({ ...errors, TW: null });
+                      }}
+                    />
+                    {errors.TW && <p className="text-xs text-red-500 mt-1 font-bold">{errors.TW}</p>}
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1 flex justify-between">
+                      Twcb <span>(Optioneel, bij CB)</span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      className="w-full p-3 border border-slate-200 rounded-lg outline-none font-mono focus:border-blue-500"
+                      placeholder="-"
+                      value={measurements.Twcb}
+                      onChange={(e) => setMeasurements({ ...measurements, Twcb: e.target.value })}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1 flex justify-between">
+                      Twtb <span>(Optioneel, bij TB)</span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      className="w-full p-3 border border-slate-200 rounded-lg outline-none font-mono focus:border-blue-500"
+                      placeholder="-"
+                      value={measurements.Twtb}
+                      onChange={(e) => setMeasurements({ ...measurements, Twtb: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* 3. Redenen voor Afkeur (Conditioneel) */}
+          {status !== "completed" && (
+            <div className="bg-red-50 p-5 rounded-xl border border-red-100 animate-in slide-in-from-top-2">
+              <div className="flex items-center gap-2 mb-4">
+                <AlertOctagon className="text-red-600" size={20} />
+                <h4 className="font-bold text-red-900">
+                  Reden voor {status === "temp_reject" ? "tijdelijke afkeur" : "afkeur"} <span className="text-red-500">*</span>
+                </h4>
+              </div>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                {REJECTION_REASONS.map((reason) => (
+                  <div 
+                    key={reason}
+                    onClick={() => {
+                        toggleReason(reason);
+                        if (errors.reasons) setErrors({ ...errors, reasons: null });
+                    }}
+                    className={`p-3 rounded-lg border cursor-pointer text-sm font-medium transition-all flex items-center gap-3 ${
+                      selectedReasons.includes(reason)
+                        ? "bg-red-100 border-red-500 text-red-800"
+                        : "bg-white border-red-100 text-slate-600 hover:border-red-300"
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedReasons.includes(reason) ? "bg-red-500 border-red-500" : "border-slate-300"}`}>
+                        {selectedReasons.includes(reason) && <CheckCircle size={10} className="text-white" />}
+                    </div>
+                    {reason}
+                  </div>
+                ))}
+              </div>
+              {errors.reasons && <p className="text-xs text-red-600 font-black mb-2 animate-pulse">{errors.reasons}</p>}
             </div>
           )}
 
-          {/* 2. MEETWAARDEN (Dynamisch) */}
-          {(showTF || showTW) && (
-            <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100">
-               <label className="text-xs font-black text-blue-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                 <Ruler size={14} /> Meetwaarden
-               </label>
-               <div className="grid grid-cols-2 gap-4">
-                 {showTF && (
-                   <div>
-                     <label className="text-xs font-bold text-slate-600 mb-1 block">TF (Flenzen)</label>
-                     <input 
-                        type="text" 
-                        className="w-full p-2 border border-slate-300 rounded-lg text-sm font-mono"
-                        placeholder="Waarde..."
-                        value={measurements.tf}
-                        onChange={e => setMeasurements({...measurements, tf: e.target.value})}
-                     />
-                   </div>
-                 )}
-                 {showTW && (
-                    <div>
-                      <label className="text-xs font-bold text-slate-600 mb-1 block">TW</label>
-                      <input 
-                          type="text" 
-                          className="w-full p-2 border border-slate-300 rounded-lg text-sm font-mono"
-                          placeholder="Waarde..."
-                          value={measurements.tw}
-                          onChange={e => setMeasurements({...measurements, tw: e.target.value})}
-                      />
-                    </div>
-                 )}
-                 {showCB && (
-                    <div>
-                      <label className="text-xs font-bold text-slate-600 mb-1 block">TWcb</label>
-                      <input 
-                          type="text" 
-                          className="w-full p-2 border border-slate-300 rounded-lg text-sm font-mono"
-                          placeholder="Waarde..."
-                          value={measurements.twcb}
-                          onChange={e => setMeasurements({...measurements, twcb: e.target.value})}
-                      />
-                    </div>
-                 )}
-                 {showTB && (
-                    <div>
-                      <label className="text-xs font-bold text-slate-600 mb-1 block">TWtb</label>
-                      <input 
-                          type="text" 
-                          className="w-full p-2 border border-slate-300 rounded-lg text-sm font-mono"
-                          placeholder="Waarde..."
-                          value={measurements.twtb}
-                          onChange={e => setMeasurements({...measurements, twtb: e.target.value})}
-                      />
-                    </div>
-                 )}
-               </div>
-            </div>
-          )}
-
-          {/* 3. OPMERKINGEN */}
+          {/* 4. Opmerkingen */}
           <div>
-            <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-2">
-                <MessageSquare size={14} /> Opmerking Operator
-            </label>
-            <textarea 
-              className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-              rows={2}
-              placeholder="Typ hier bijzonderheden..."
-              value={comments}
-              onChange={(e) => setComments(e.target.value)}
+            <label className="block text-xs font-bold uppercase text-slate-400 mb-2">Opmerking / Toelichting</label>
+            <textarea
+              className="w-full p-4 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500/20 text-sm min-h-[100px]"
+              placeholder="Typ hier eventuele bijzonderheden..."
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
             />
           </div>
 
-          {/* 4. BESTEMMING OVERRIDE (Alleen bij OK status) */}
-          {status === 'ok' && (
-             <div>
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 block">Bestemming</label>
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                    {['NABW', 'MAZAK', 'BM01'].map(dest => (
-                        <button
-                            key={dest}
-                            onClick={() => setDestination(dest)}
-                            className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors ${destination === dest ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                        >
-                            {dest === 'BM01' ? 'BM01 (Direct QC)' : dest === 'NABW' ? 'Nabewerking' : 'Mazak'}
-                        </button>
-                    ))}
-                </div>
-             </div>
-          )}
-
         </div>
 
-        {/* Footer Actions */}
-        <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-            <button onClick={onClose} className="px-6 py-3 rounded-xl font-bold text-sm text-slate-500 hover:bg-slate-200 transition-colors">
-                Annuleren
-            </button>
-            <button 
-                onClick={handleSubmit}
-                disabled={isProcessing}
-                className="px-8 py-3 bg-blue-600 text-white rounded-xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 shadow-lg shadow-blue-200 flex items-center gap-2 disabled:opacity-50"
-            >
-                {isProcessing ? <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"/> : <Save size={18} />}
-                Bevestigen
-            </button>
+        {/* Footer */}
+        <div className="bg-slate-50 p-4 border-t border-slate-200 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-200 transition-colors"
+          >
+            Annuleren
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={isProcessing}
+            className={`px-8 py-3 rounded-xl font-black text-white shadow-lg flex items-center gap-2 transition-all active:scale-95 ${
+              status === "completed" 
+                ? "bg-green-600 hover:bg-green-700 shadow-green-200" 
+                : status === "temp_reject"
+                ? "bg-orange-500 hover:bg-orange-600 shadow-orange-200"
+                : "bg-red-600 hover:bg-red-700 shadow-red-200"
+            }`}
+          >
+            {isProcessing ? <span className="animate-spin">⌛</span> : <Save size={18} />}
+            {status === "completed" ? "Goedkeuren & Opslaan" : "Afkeur Opslaan"}
+          </button>
         </div>
       </div>
     </div>
   );
 };
 
-
-// --- HOOFD COMPONENT ---
 const LossenView = ({ currentUser, products, currentStation }) => {
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedItem, setSelectedItem] = useState(null); // Voor de modal
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
 
-  // Filter de producten
-  const itemsToUnload = useMemo(() => {
-    if (!products || !currentStation) return [];
-    const stationNorm = normalizeMachine(currentStation);
+  // Filter producten die 'klaar' zijn met wikkelen en nu gelost moeten worden
+  // OF producten die al op 'Lossen' staan.
+  const unloadableProducts = useMemo(() => {
+    if (!products) return [];
+    
+    return products.filter((p) => {
+      // Mag niet al klaar zijn
+      if (p.currentStep === "Finished" || p.currentStep === "REJECTED") return false;
 
-    return products.filter(p => {
-      const step = (p.currentStep || "").toLowerCase();
-      if (step !== 'lossen') return false;
+      // Zoekfilter
+      if (searchTerm) {
+        const term = searchTerm.toLowerCase();
+        if (!p.lotNumber?.toLowerCase().includes(term) && !p.item?.toLowerCase().includes(term)) {
+          return false;
+        }
+      }
 
-      const pMachine = String(p.originMachine || p.currentStation || "");
-      const pMachineNorm = normalizeMachine(pMachine);
+      // Check of het product bij dit station hoort (Strict Matching)
+      // We checken of currentStation of originMachine overeenkomt met het geselecteerde station (bijv. "BH15")
+      const matchesStation = (p.currentStation === currentStation) || (p.originMachine === currentStation);
 
-      return pMachine === currentStation || pMachineNorm === stationNorm;
+      // Alleen tonen als status 'Lossen' is EN het station matcht
+      if (p.currentStep === "Lossen" && matchesStation) return true;
+
+      return false;
     }).sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0));
-  }, [products, currentStation]);
+  }, [products, currentStation, searchTerm]);
 
-  const filteredItems = itemsToUnload.filter(item => {
-    if (!searchTerm) return true;
-    const term = searchTerm.toLowerCase();
-    return (
-      (item.lotNumber && item.lotNumber.toLowerCase().includes(term)) ||
-      (item.item && item.item.toLowerCase().includes(term)) ||
-      (item.orderId && item.orderId.toLowerCase().includes(term))
-    );
-  });
-
-  // De definitieve save actie
-  const handleConfirmAction = async (data) => {
-    setIsProcessing(true);
+  const handleProcessProduct = async (product, status, data) => {
     try {
-      const appId = typeof window !== "undefined" && window.__app_id ? window.__app_id : "fittings-app-v1";
-      const productRef = doc(db, 'artifacts', appId, 'public', 'data', 'tracked_products', data.itemId);
+      const productRef = doc(db, "artifacts", "fittings-app-v1", "public", "data", "tracked_products", product.id);
       
-      let updates = {
+      const updates = {
         updatedAt: serverTimestamp(),
-        unloadedAt: serverTimestamp(),
-        lastOperator: currentUser?.email || 'Operator',
-        measurements: data.measurements,
-        comments: data.comments,
-        rejectionReason: data.rejectionReason || null
+        measurements: data.measurements, // Sla metingen op
+        note: data.note,
+        unloadedBy: currentUser?.email || "Unknown",
+        unloadedAt: new Date().toISOString()
       };
 
-      // Logica voor status en routing
-      if (data.status === 'reject') {
-          updates.status = 'rejected';
-          updates.currentStep = 'REJECTED';
-          updates.currentStation = 'SCRAP';
-      } else if (data.status === 'temp_reject') {
-          updates.status = 'hold';
-          updates.currentStep = 'Hold'; 
-          updates.currentStation = 'HOLD_AREA'; 
-          updates.inspection = { 
-            status: 'Tijdelijke afkeur', 
-            note: data.comments, 
-            reason: data.rejectionReason 
-          };
-      } else {
-          // OK status -> Routing toepassen
-          // FIX: GEBRUIK EXACTE CODES DIE WORKSTATION HUB VERWACHT
-          if (data.destination === 'NABW') {
-            updates.currentStep = "Nabewerken";
-            updates.currentStation = "NABW"; // CORRECTE CODE
-            updates.transportToProcessingAt = serverTimestamp();
-          } else if (data.destination === 'MAZAK') {
-            updates.currentStep = "Mazak";
-            updates.currentStation = "MAZAK"; // CORRECTE CODE
-            updates.transportToProcessingAt = serverTimestamp();
-          } else if (data.destination === 'BM01') {
-            updates.currentStep = "Eindinspectie";
-            updates.currentStation = "BM01";
-            updates.arrivedAtInspectionAt = serverTimestamp();
-          }
+      if (status === "completed") {
+        updates.currentStep = "Nabewerking"; // Of Mazak, afhankelijk van route
+        // Als het FL is, misschien naar Mazak? Voor nu default Nabewerking, routing regelt de volgende stap
+        if (product.item?.toUpperCase().includes("FL")) {
+             updates.currentStation = "MAZAK"; // Suggestie voor volgende locatie
+        } else {
+             updates.currentStation = "NABW"; // Suggestie
+        }
+      } else if (status === "temp_reject") {
+        updates.inspection = data.inspection;
+        updates.currentStep = "HOLD_AREA"; // Markeer als geparkeerd
+        updates.currentStation = "HOLD_AREA";
+      } else if (status === "rejected") {
+        updates.status = "rejected";
+        updates.currentStep = "REJECTED";
+        updates.currentStation = "AFKEUR";
+        updates.inspection = data.inspection;
       }
 
       await updateDoc(productRef, updates);
-      setSelectedItem(null); // Sluit modal
+      
+      // Als er opmerkingen/afkeur is, log een bericht
+      if (status !== "completed" || data.note) {
+        await addDoc(collection(db, "artifacts", "fittings-app-v1", "public", "data", "messages"), {
+            title: status === "completed" ? "Opmerking bij Lossen" : `Afkeur bij Lossen (${status})`,
+            message: `Lot: ${product.lotNumber}. ${data.note || "Geen opmerking."} ${data.inspection ? "Redenen: " + data.inspection.reasons.join(", ") : ""}`,
+            type: status === "completed" ? "info" : "warning",
+            status: "unread",
+            createdAt: serverTimestamp(),
+            source: "LossenView"
+        });
+      }
+
     } catch (error) {
-      console.error("Fout bij opslaan:", error);
-      alert("Er ging iets mis. Probeer opnieuw.");
-    } finally {
-      setIsProcessing(false);
+      console.error("Fout bij verwerken:", error);
+      throw error;
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      {/* Header */}
-      <div className="bg-white p-4 border-b border-gray-200 flex justify-between items-center shrink-0">
+    <div className="flex flex-col h-full bg-slate-50">
+      {/* Top Bar */}
+      <div className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="bg-orange-100 p-2 rounded-xl text-orange-600">
-            <Package size={24} />
+          <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
+            <Box size={24} />
           </div>
           <div>
-            <h2 className="text-lg font-black text-slate-800 uppercase italic tracking-tight">Lossen & Kwaliteit</h2>
-            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
-              {filteredItems.length} items gereed op {currentStation}
-            </p>
+            <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">Lossen & Controle</h2>
+            <p className="text-xs text-slate-500 font-medium">Scan of selecteer producten om te lossen voor {currentStation}</p>
           </div>
         </div>
         
-        <div className="relative w-64">
-          <Search className="absolute left-3 top-2.5 text-gray-400 w-4 h-4" />
+        <div className="relative w-72">
+          <Search className="absolute left-3 top-2.5 text-slate-400 w-4 h-4" />
           <input 
             type="text" 
-            placeholder="Zoek lotnummer..." 
-            className="w-full pl-9 pr-4 py-2 bg-gray-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-0 rounded-lg text-sm transition-all"
+            placeholder="Zoek op lotnummer of type..." 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"
           />
         </div>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-        {filteredItems.length === 0 ? (
+      {/* List Area */}
+      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        {unloadableProducts.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-400 opacity-60">
-            <Truck size={64} className="mb-4" />
-            <p className="font-bold text-lg">Geen items om te lossen</p>
-            <p className="text-sm">Producten verschijnen hier als ze gereed zijn op de wikkelbank.</p>
+            <Box size={64} className="mb-4 text-slate-300" />
+            <p className="text-lg font-bold uppercase tracking-widest">Geen producten om te lossen</p>
+            <p className="text-xs">Producten verschijnen hier als ze klaar zijn met wikkelen op {currentStation}</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4">
-            {filteredItems.map(item => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {unloadableProducts.map(product => (
               <div 
-                key={item.id} 
-                onClick={() => setSelectedItem(item)} 
-                className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group"
+                key={product.id}
+                className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer group relative overflow-hidden"
+                onClick={() => setSelectedProduct(product)}
               >
-                <div className="flex flex-col md:flex-row gap-4 justify-between items-center">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                       <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                         KLIK OM TE LOSSEN
-                       </span>
-                       <span className="text-xs font-mono text-gray-400 flex items-center gap-1">
-                         <Clock size={10} /> {item.updatedAt?.toDate ? item.updatedAt.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-'}
-                       </span>
-                    </div>
-                    <h3 className="text-xl font-black text-slate-800 tracking-tight mb-1">
-                      {item.lotNumber}
-                    </h3>
-                    <p className="text-sm text-slate-600 font-medium mb-2">
-                      {item.item}
-                    </p>
-                    <div className="flex items-center gap-4 text-xs text-gray-400 font-mono">
-                       <span>ORD: {item.orderId}</span>
-                    </div>
-                  </div>
-                  <div className="text-slate-300 group-hover:text-blue-500 transition-colors">
-                      <ArrowRight size={24} />
-                  </div>
+                <div className="absolute top-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <ArrowRight className="text-blue-500" />
+                </div>
+                
+                <div className="flex justify-between items-start mb-2">
+                    <span className="text-2xl font-black text-slate-800 tracking-tight">{product.lotNumber}</span>
+                </div>
+                
+                <p className="text-sm font-bold text-slate-500 mb-4">{product.item}</p>
+                
+                <div className="flex items-center gap-2 text-xs font-mono text-slate-400 bg-slate-50 p-2 rounded-lg w-fit">
+                    <Ruler size={14} />
+                    <span>
+                        {product.item.toUpperCase().includes("FL") ? "FLENS (TF meten)" : "STANDAARD (TW meten)"}
+                    </span>
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center">
+                    <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">KLIK OM TE VERWERKEN</span>
+                    <span className="text-[10px] text-slate-400">
+                        {product.updatedAt ? new Date(product.updatedAt.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
+                    </span>
                 </div>
               </div>
             ))}
@@ -447,14 +469,11 @@ const LossenView = ({ currentUser, products, currentStation }) => {
         )}
       </div>
 
-      {/* MODAL RENDEREN ALS ER EEN ITEM IS GESELECTEERD */}
-      {selectedItem && (
-        <UnloadActionModal 
-            item={selectedItem}
-            currentStation={currentStation}
-            onClose={() => setSelectedItem(null)}
-            onConfirm={handleConfirmAction}
-            isProcessing={isProcessing}
+      {selectedProduct && (
+        <UnloadModal 
+          product={selectedProduct} 
+          onClose={() => setSelectedProduct(null)}
+          onProcess={handleProcessProduct}
         />
       )}
     </div>

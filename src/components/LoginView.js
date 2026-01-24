@@ -1,4 +1,7 @@
 import React, { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import {
   KeyRound,
   Mail,
@@ -11,28 +14,29 @@ import {
   Send,
   Building,
   CheckCircle,
+  AlertCircle,
 } from "lucide-react";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+
 import { db } from "../config/firebase";
 
-// Helper voor App ID
 const getAppId = () => {
   if (typeof window !== "undefined" && window.__app_id) return window.__app_id;
   return "fittings-app-v1";
 };
 
-const LoginView = ({
-  onLogin,
-  error,
-  mustChangePassword,
-  onPasswordChanged,
-}) => {
+const LoginView = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [newPassword, setNewPassword] = useState("");
 
-  // States voor Aanvraag Modal
+  const navigate = useNavigate();
+  const location = useLocation();
+  const auth = getAuth();
+
   const [showRequestModal, setShowRequestModal] = useState(false);
   const [reqData, setReqData] = useState({
     name: "",
@@ -44,27 +48,50 @@ const LoginView = ({
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setError("");
+
     try {
       if (mustChangePassword) {
-        await onPasswordChanged(newPassword);
+        console.log("Wachtwoord wijzigen nog niet geïmplementeerd");
       } else {
-        await onLogin(email, password);
+        console.log("🚀 Poging tot inloggen met:", email);
+        const userCredential = await signInWithEmailAndPassword(
+          auth,
+          email,
+          password
+        );
+        console.log("✅ Succesvol ingelogd:", userCredential.user.uid);
+
+        // AANGEPAST: Standaard naar '/' (Portaal) in plaats van '/admin'
+        // Tenzij ze van een specifieke link kwamen (location.state.from)
+        const from = location.state?.from?.pathname || "/";
+        navigate(from, { replace: true });
       }
     } catch (err) {
-      console.error(err);
+      console.error("❌ Login fout:", err);
+      let msg = "Inloggen mislukt. Controleer uw gegevens.";
+      if (err.code === "auth/invalid-credential")
+        msg = "Ongeldig e-mailadres of wachtwoord.";
+      if (err.code === "auth/user-not-found")
+        msg = "Geen account gevonden met dit e-mailadres.";
+      if (err.code === "auth/wrong-password")
+        msg = "Het ingevoerde wachtwoord is onjuist.";
+      if (err.code === "auth/too-many-requests")
+        msg = "Te veel pogingen. Wacht even en probeer het opnieuw.";
+      if (err.code === "auth/network-request-failed")
+        msg = "Netwerkfout. Controleer uw internetverbinding.";
+      setError(msg);
     } finally {
       setLoading(false);
     }
   };
 
-  // --- NIEUWE LOGICA: VERSTUUR AANVRAAG + BERICHT ---
   const handleRequestSubmit = async (e) => {
     e.preventDefault();
     setReqStatus("sending");
     const appId = getAppId();
 
     try {
-      // 1. Maak de technische aanvraag in de database (voor AdminUsersView)
       await addDoc(
         collection(db, "artifacts", appId, "public", "data", "access_requests"),
         {
@@ -74,25 +101,23 @@ const LoginView = ({
         }
       );
 
-      // 2. STUUR BERICHT NAAR ADMIN INBOX
       await addDoc(
         collection(db, "artifacts", appId, "public", "data", "messages"),
         {
-          type: "system_alert", // Speciaal type voor icoontjes
-          target: "admin", // Doelgroep
+          type: "system_alert",
+          target: "admin",
           sender: "Systeem",
           senderName: "Login Portal",
           subject: `Aanvraag: ${reqData.name}`,
           content: `Nieuwe toegangsaanvraag ontvangen van ${reqData.name} voor afdeling ${reqData.department}. Controleer gebruikersbeheer.`,
           timestamp: serverTimestamp(),
           read: false,
-          actionLink: "admin_users", // Hiermee kunnen we een "Ga naar" knop maken
+          actionLink: "admin_users",
         }
       );
 
       setReqStatus("success");
 
-      // Reset na 3 seconden
       setTimeout(() => {
         setShowRequestModal(false);
         setReqStatus("idle");
@@ -111,7 +136,6 @@ const LoginView = ({
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-cyan-950 to-blue-950 flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl overflow-hidden border border-white/10 relative">
-        {/* Header Section */}
         <div className="bg-gradient-to-br from-slate-900 via-cyan-950 to-blue-950 p-8 text-center relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-400 via-blue-500 to-emerald-400"></div>
           <div className="absolute -top-10 -right-10 w-32 h-32 bg-cyan-500 rounded-full blur-3xl opacity-20"></div>
@@ -130,12 +154,11 @@ const LoginView = ({
           </div>
         </div>
 
-        {/* Form Section */}
         <div className="p-8">
           <form onSubmit={handleSubmit} className="space-y-5">
             {error && (
               <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm font-bold flex items-center gap-3 border border-red-100 animate-in slide-in-from-top-2">
-                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                <AlertCircle size={20} className="shrink-0" />
                 {error}
               </div>
             )}
@@ -198,9 +221,6 @@ const LoginView = ({
                     placeholder="Kies een veilig wachtwoord"
                   />
                 </div>
-                <p className="text-xs text-emerald-600 font-medium px-1">
-                  Je logt voor het eerst in. Stel een nieuw wachtwoord in.
-                </p>
               </div>
             )}
 
@@ -220,7 +240,6 @@ const LoginView = ({
             </button>
           </form>
 
-          {/* Aanvraag Knop */}
           <div className="mt-6 pt-6 border-t border-slate-100 flex flex-col items-center">
             <button
               type="button"
@@ -232,14 +251,12 @@ const LoginView = ({
           </div>
         </div>
 
-        {/* Footer */}
         <div className="bg-slate-50 p-4 text-center border-t border-slate-100">
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
             © 2026 Future Pipe Industries
           </p>
         </div>
 
-        {/* AANVRAAG MODAL */}
         {showRequestModal && (
           <div className="absolute inset-0 bg-slate-900/95 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-8 animate-in fade-in duration-200">
             <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95">

@@ -1,227 +1,185 @@
-import React from "react";
-import { Filter, X, RotateCcw, Info } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { NavLink, useLocation } from "react-router-dom"; // useLocation toegevoegd
+import { useAdminAuth } from "../hooks/useAdminAuth";
+import {
+  LayoutGrid,
+  Package,
+  Search,
+  Calculator,
+  Bot,
+  Settings,
+  LogOut,
+  Mail,
+  ShieldCheck,
+  User,
+  Factory,
+  Filter, // Nieuw icoon voor de filter knop
+} from "lucide-react";
 
-/**
- * Sidebar: Intelligente filter zijbalk met verbeterde Balloon Tips.
- */
-const Sidebar = ({
-  filters,
-  setFilters,
-  uniqueTypes = [],
-  uniqueDiameters = [],
-  uniquePressures = [],
-  uniqueConnections = [],
-  uniqueAngles = [],
-  uniqueRadii = [],
-  uniqueBorings = [],
-  uniqueLabels = [],
-  isOpen,
-  toggleSidebar,
-}) => {
-  const resetFilters = () => {
-    setFilters({
-      type: "-",
-      diameter: "-",
-      pressure: "-",
-      connection: "-",
-      angle: "-",
-      radius: "-",
-      boring: "-",
-      productLabel: "-",
-    });
-  };
+const Sidebar = ({ onToggleCatalogFilters, isCatalogFiltersOpen }) => {
+  const { isAdmin, loading, user } = useAdminAuth();
+  const location = useLocation(); // We moeten weten op welke pagina we zijn
 
-  /**
-   * Verbeterde Balloon Tooltip: Nu met betere zichtbaarheid en hogere z-index.
-   */
-  const Tooltip = ({ text }) => (
-    <div className="group relative inline-block ml-2 align-middle">
-      <div className="p-1 bg-slate-100 rounded-full cursor-help hover:bg-emerald-100 transition-colors">
-        <Info
-          size={11}
-          className="text-slate-400 group-hover:text-emerald-600 transition-colors"
-        />
-      </div>
-      {/* De Ballon */}
-      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-48 p-3 bg-slate-900 text-white text-[10px] font-bold rounded-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[100] pointer-events-none shadow-2xl border border-slate-700 leading-snug">
-        <div className="relative z-10">{text}</div>
-        {/* Pijltje van de ballon */}
-        <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-slate-900" />
-      </div>
-    </div>
-  );
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [showName, setShowName] = useState(false);
 
-  const FilterSection = ({
-    label,
-    value,
-    options = [],
-    filterKey,
-    tooltipText,
-    colorClass = "border-slate-200",
-  }) => (
-    <div className="mb-4 animate-in fade-in slide-in-from-left-1 duration-300">
-      <div className="flex items-center mb-1.5 px-1">
-        <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.1em]">
-          {label}
-        </label>
-        {tooltipText && <Tooltip text={tooltipText} />}
-      </div>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={(e) =>
-            setFilters((prev) => ({ ...prev, [filterKey]: e.target.value }))
-          }
-          className={`w-full bg-white border ${colorClass} rounded-xl px-3 py-2 text-[11px] font-bold text-slate-700 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/5 transition-all appearance-none cursor-pointer shadow-sm`}
-        >
-          <option value="-">Alle {label}</option>
-          {options.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-          <svg
-            width="8"
-            height="5"
-            viewBox="0 0 10 6"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M1 1L5 5L9 1" />
-          </svg>
-        </div>
-      </div>
-    </div>
-  );
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setShowName((prev) => !prev);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
-  // Conditionele vlaggen
-  const isElbow = filters.type.toLowerCase().includes("elbow");
-  const is90Degrees = filters.angle === "90";
-  const isFlange =
-    filters.type.toLowerCase().includes("flens") ||
-    filters.type.toLowerCase().includes("flange");
+  const navItems = [
+    { path: "/", label: "Portaal", icon: LayoutGrid },
+    { path: "/planning", label: "Planning", icon: Factory },
+    { path: "/products", label: "Catalogus", icon: Search },
+    { path: "/inventory", label: "Gereedschap", icon: Package },
+    { path: "/assistant", label: "AI Assistent", icon: Bot },
+    { path: "/calculator", label: "Calculator", icon: Calculator },
+    {
+      path: "/admin/messages",
+      label: "Berichten",
+      icon: Mail,
+      adminOnly: true,
+    },
+    { path: "/admin", label: "Beheer", icon: Settings, adminOnly: true },
+  ];
+
+  const visibleItems = navItems.filter((item) => {
+    if (item.adminOnly) return isAdmin;
+    return true;
+  });
+
+  const badgeText = showName
+    ? user?.email || "Onbekende Gebruiker"
+    : isAdmin
+    ? "ADMINISTRATOR"
+    : "OPERATOR";
 
   return (
-    <>
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 lg:hidden"
-          onClick={toggleSidebar}
-        />
-      )}
-
-      <aside
-        className={`fixed lg:relative inset-y-0 left-0 z-50 w-72 bg-white border-r border-slate-200 transform ${
-          isOpen ? "translate-x-0" : "-translate-x-full"
-        } lg:translate-x-0 transition-transform duration-300 ease-in-out flex flex-col h-full shadow-xl lg:shadow-none`}
-      >
-        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-          <div className="flex items-center gap-2">
-            <div className="p-2 bg-emerald-50 rounded-xl text-emerald-600 shadow-sm border border-emerald-100">
-              <Filter size={16} />
-            </div>
-            <h2 className="text-sm font-black uppercase tracking-tight text-slate-800 italic">
-              Catalogus Filters
-            </h2>
+    <aside
+      className={`bg-slate-900 text-slate-300 flex flex-col fixed left-0 border-r border-slate-800 z-50 hidden md:flex transition-all duration-300 ease-in-out
+        ${isExpanded ? "w-64" : "w-16"} 
+      `}
+      style={{ top: "4rem", height: "calc(100vh - 4rem)" }}
+      onMouseEnter={() => setIsExpanded(true)}
+      onMouseLeave={() => setIsExpanded(false)}
+    >
+      <nav className="flex-1 px-2 pt-4 space-y-2 overflow-y-auto custom-scrollbar overflow-x-hidden">
+        {loading ? (
+          <div className="px-2 py-3 text-xs text-slate-500 animate-pulse text-center">
+            ...
           </div>
-          <button
-            onClick={resetFilters}
-            className="p-2 text-slate-300 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all"
-            title="Herstel Filters"
+        ) : (
+          visibleItems.map((item) => {
+            const isActive = location.pathname === item.path;
+
+            return (
+              <div key={item.path} className="flex flex-col gap-1">
+                {/* Hoofd Item */}
+                <NavLink
+                  to={item.path}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 px-3 py-3 rounded-xl transition-all duration-200 whitespace-nowrap ${
+                      isActive
+                        ? "bg-emerald-500/10 text-emerald-400 font-semibold border border-emerald-500/20"
+                        : "hover:bg-slate-800 hover:text-white border border-transparent"
+                    } ${isExpanded ? "justify-start" : "justify-center"}`
+                  }
+                >
+                  <item.icon size={20} strokeWidth={2} className="shrink-0" />
+                  <span
+                    className={`transition-all duration-300 origin-left ${
+                      isExpanded
+                        ? "opacity-100 w-auto translate-x-0"
+                        : "opacity-0 w-0 -translate-x-4 overflow-hidden"
+                    }`}
+                  >
+                    {item.label}
+                  </span>
+                </NavLink>
+
+                {/* SUB-KNOP: Alleen tonen als we op de Catalogus pagina zijn én bij het item Catalogus */}
+                {item.path === "/products" && isActive && (
+                  <button
+                    onClick={onToggleCatalogFilters}
+                    className={`
+                      ml-auto mr-2 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider
+                      transition-all duration-300 border
+                      ${
+                        isCatalogFiltersOpen
+                          ? "bg-emerald-500 text-white border-emerald-400 shadow-md shadow-emerald-500/20"
+                          : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500 hover:text-white"
+                      }
+                      ${
+                        isExpanded
+                          ? "opacity-100 translate-x-0"
+                          : "opacity-0 -translate-x-4 hidden"
+                      }
+                    `}
+                    style={{ width: "90%" }} // Iets smaller dan de hoofdknop
+                  >
+                    <Filter size={14} />
+                    <span>
+                      {isCatalogFiltersOpen
+                        ? "Verberg Filters"
+                        : "Toon Filters"}
+                    </span>
+                  </button>
+                )}
+              </div>
+            );
+          })
+        )}
+      </nav>
+
+      <div className="p-2 border-t border-slate-800">
+        {!loading && (
+          <div
+            className={`mb-2 rounded-lg text-xs font-bold border flex items-center transition-all duration-300 overflow-hidden whitespace-nowrap ${
+              isExpanded ? "px-3 py-2 gap-2" : "p-2 justify-center"
+            } ${
+              isAdmin
+                ? "bg-emerald-900/30 text-emerald-400 border-emerald-500/30"
+                : "bg-slate-800 text-slate-400 border-slate-700"
+            }`}
           >
-            <RotateCcw size={16} />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
-          <FilterSection
-            label="Product Type"
-            filterKey="type"
-            value={filters.type}
-            options={uniqueTypes}
-            tooltipText="Kies het type fitting of buis."
-          />
-
-          {isElbow && (
-            <FilterSection
-              label="Hoek (Degrees)"
-              filterKey="angle"
-              value={filters.angle}
-              options={uniqueAngles}
-              tooltipText="De gradenhoek van de bocht (bijv. 45 of 90)."
-              colorClass="border-blue-200"
-            />
-          )}
-
-          {isElbow && is90Degrees && (
-            <FilterSection
-              label="Radius"
-              filterKey="radius"
-              value={filters.radius}
-              options={uniqueRadii}
-              tooltipText="De specifieke boogstraal van het product."
-              colorClass="border-amber-200"
-            />
-          )}
-
-          {isFlange && (
-            <FilterSection
-              label="Boring / Drilling"
-              filterKey="boring"
-              value={filters.boring}
-              options={uniqueBorings}
-              tooltipText="Selecteer het gatenpatroon (bijv. DIN of ANSI)."
-              colorClass="border-purple-200"
-            />
-          )}
-
-          <div className="h-px bg-slate-100 my-4" />
-
-          <FilterSection
-            label="Diameter (ID)"
-            filterKey="diameter"
-            value={filters.diameter}
-            options={uniqueDiameters}
-            tooltipText="De binnendiameter van de fitting."
-          />
-          <FilterSection
-            label="Drukklasse (PN)"
-            filterKey="pressure"
-            value={filters.pressure}
-            options={uniquePressures}
-            tooltipText="De maximale werkdruk."
-          />
-          <FilterSection
-            label="Verbinding"
-            filterKey="connection"
-            value={filters.connection}
-            options={uniqueConnections}
-            tooltipText="Type mof (TB of CB)."
-          />
-          <FilterSection
-            label="Label"
-            filterKey="productLabel"
-            value={filters.productLabel}
-            options={uniqueLabels}
-            tooltipText="Extra keurmerken zoals WRAS of Potable Water."
-          />
-        </div>
-
-        <div className="p-5 border-t border-slate-100 bg-slate-50/30">
-          <div className="bg-emerald-50 rounded-2xl p-4 border border-emerald-100 flex items-center justify-between">
-            <p className="text-[10px] font-black text-emerald-800 uppercase italic">
-              Filters Actief
-            </p>
-            <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></div>
+            {isAdmin ? (
+              <ShieldCheck size={14} className="shrink-0" />
+            ) : (
+              <User size={14} className="shrink-0" />
+            )}
+            <span
+              className={`truncate uppercase tracking-wide transition-all duration-300 ${
+                isExpanded ? "opacity-100 max-w-[150px]" : "opacity-0 max-w-0"
+              }`}
+            >
+              {badgeText}
+            </span>
           </div>
-        </div>
-      </aside>
-    </>
+        )}
+
+        <NavLink
+          to="/login"
+          className={`flex items-center gap-3 rounded-xl hover:bg-red-500/10 hover:text-red-400 transition-colors text-slate-400 whitespace-nowrap ${
+            isExpanded ? "px-4 py-3 justify-start" : "p-3 justify-center"
+          }`}
+          title="Uitloggen"
+        >
+          <LogOut size={18} className="shrink-0" />
+          <span
+            className={`text-sm font-medium transition-all duration-300 ${
+              isExpanded
+                ? "opacity-100 w-auto"
+                : "opacity-0 w-0 overflow-hidden"
+            }`}
+          >
+            Uitloggen
+          </span>
+        </NavLink>
+      </div>
+    </aside>
   );
 };
 

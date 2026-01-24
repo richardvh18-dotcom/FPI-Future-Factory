@@ -15,7 +15,8 @@ import {
   Settings,
   FileUp,
 } from "lucide-react";
-import { doc, setDoc } from "firebase/firestore";
+// AANGEPAST: getDoc toegevoegd aan imports om data op te kunnen halen
+import { doc, setDoc, getDoc } from "firebase/firestore";
 import { db, appId } from "../../../config/firebase";
 
 // Imports van de sub-componenten
@@ -24,7 +25,7 @@ import LibraryView from "./LibraryView";
 import BlueprintsView from "./BlueprintsView";
 import DimensionsView from "./DimensionsView";
 import SpecsView from "./SpecsView";
-import BulkUploadView from "./BulkUploadView"; // NIEUW
+import BulkUploadView from "./BulkUploadView";
 import AdminDashboard from "../AdminDashboard";
 
 const AdminMatrixManager = ({
@@ -53,30 +54,113 @@ const AdminMatrixManager = ({
   });
   const [blueprints, setBlueprints] = useState({});
 
+  // NIEUW: Data ophalen als deze niet via props binnenkomt
   useEffect(() => {
-    if (productRange) setMatrixData(productRange);
-    if (generalConfig) {
-      setLibraryData({
-        connections: generalConfig.connections || [],
-        labels: generalConfig.labels || [],
-        extraCodes: generalConfig.extraCodes || generalConfig.codes || [],
-        product_names: generalConfig.product_names || [],
-        pns: generalConfig.pns
-          ? [...generalConfig.pns].sort((a, b) => a - b)
-          : [],
-        diameters: generalConfig.diameters
-          ? [...generalConfig.diameters].sort((a, b) => a - b)
-          : [],
-        angles: generalConfig.angles
-          ? [...generalConfig.angles].sort((a, b) => a - b)
-          : [],
-        borings: generalConfig.borings || [],
-      });
-    }
-    if (productTemplates) setBlueprints(productTemplates);
+    const fetchData = async () => {
+      // Als data via props is meegegeven, gebruik die (sneller)
+      if (productRange && generalConfig && productTemplates) {
+        setMatrixData(productRange);
+        setLibraryData({
+          connections: generalConfig.connections || [],
+          labels: generalConfig.labels || [],
+          extraCodes: generalConfig.extraCodes || generalConfig.codes || [],
+          product_names: generalConfig.product_names || [],
+          pns: generalConfig.pns
+            ? [...generalConfig.pns].sort((a, b) => a - b)
+            : [],
+          diameters: generalConfig.diameters
+            ? [...generalConfig.diameters].sort((a, b) => a - b)
+            : [],
+          angles: generalConfig.angles
+            ? [...generalConfig.angles].sort((a, b) => a - b)
+            : [],
+          borings: generalConfig.borings || [],
+        });
+        setBlueprints(productTemplates);
+        return;
+      }
+
+      // Anders: Zelf ophalen uit Firestore
+      setLoading(true);
+      try {
+        console.log("📥 MatrixManager: Data ophalen uit settings...");
+
+        // We halen de 3 hoofdbestanden op uit de 'settings' collectie
+        const [rangeSnap, configSnap, templatesSnap] = await Promise.all([
+          getDoc(
+            doc(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "settings",
+              "product_range"
+            )
+          ),
+          getDoc(
+            doc(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "settings",
+              "general_config"
+            )
+          ),
+          getDoc(
+            doc(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "settings",
+              "product_templates"
+            )
+          ),
+        ]);
+
+        // 1. Matrix (Beschikbaarheid)
+        if (rangeSnap.exists()) {
+          setMatrixData(rangeSnap.data());
+        }
+
+        // 2. Library (Algemene Instellingen)
+        if (configSnap.exists()) {
+          const config = configSnap.data();
+          setLibraryData({
+            connections: config.connections || [],
+            labels: config.labels || [],
+            extraCodes: config.extraCodes || config.codes || [],
+            product_names: config.product_names || [],
+            pns: config.pns ? [...config.pns].sort((a, b) => a - b) : [],
+            diameters: config.diameters
+              ? [...config.diameters].sort((a, b) => a - b)
+              : [],
+            angles: config.angles
+              ? [...config.angles].sort((a, b) => a - b)
+              : [],
+            borings: config.borings || [],
+          });
+        }
+
+        // 3. Blauwdrukken
+        if (templatesSnap.exists()) {
+          setBlueprints(templatesSnap.data());
+        }
+      } catch (err) {
+        console.error("❌ Fout bij laden matrix data:", err);
+        setStatus({ type: "error", msg: "Kon instellingen niet ophalen." });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
   }, [productRange, generalConfig, productTemplates]);
 
-  // FIX: Navigatie mapping voor dashboard IDs
   const handleNavigate = (targetId) => {
     switch (targetId) {
       case "admin_matrix":
@@ -87,7 +171,7 @@ const AdminMatrixManager = ({
         break;
       case "admin_upload":
         setActiveTab("admin_upload");
-        break; // NU GEKOPPELD
+        break;
       default:
         setActiveTab(targetId);
     }
@@ -121,6 +205,7 @@ const AdminMatrixManager = ({
       setStatus({ type: "success", msg: "Opgeslagen!" });
       setHasUnsavedChanges(false);
     } catch (e) {
+      console.error("Save error:", e);
       setStatus({ type: "error", msg: "Fout bij opslaan." });
     } finally {
       setLoading(false);
@@ -133,7 +218,7 @@ const AdminMatrixManager = ({
     { id: "library", label: "Bibliotheek", icon: <Settings size={14} /> },
     { id: "blueprints", label: "Blauwdrukken", icon: <Layers size={14} /> },
     { id: "dimensions", label: "Maatvoering", icon: <Ruler size={14} /> },
-    { id: "admin_upload", label: "Bulk Upload", icon: <FileUp size={14} /> }, // NU IN TABS
+    { id: "admin_upload", label: "Bulk Upload", icon: <FileUp size={14} /> },
     { id: "specs", label: "Overzicht", icon: <FileText size={14} /> },
   ];
 

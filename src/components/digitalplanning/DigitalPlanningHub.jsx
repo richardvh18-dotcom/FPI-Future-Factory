@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   BarChart3,
@@ -17,39 +18,49 @@ import WorkstationHub from "./WorkstationHub";
 import PlannerHub from "./PlannerHub";
 
 /**
- * DigitalPlanningHub V10.7 (Layout & Functionaliteit Hersteld)
- * - Layout gecentreerd bovenaan (pt-24)
- * - Master Planner en Spools aanwezig
+ * DigitalPlanningHub V11.1 (Labels Updated & Back Button Fix)
+ * - Tegelnamen aangepast: Fitting Productions, Pipe Productions, Spools Productions.
+ * - Terug knop onderin gerepareerd met useNavigate.
  */
-const DigitalPlanningHub = ({ onBack }) => {
+const DigitalPlanningHub = () => {
   const { user } = useAdminAuth();
+  const navigate = useNavigate();
 
   // State
   const [currentStation, setCurrentStation] = useState(null);
   const [activeDept, setActiveDept] = useState(null); // 'FITTINGS', 'PIPES', 'SPOOLS', 'PLANNER'
 
+  // Terug knop logica (binnen de hub)
   const handleExitStation = () => {
+    // Als we in een station zitten, ga terug naar de afdeling
     setCurrentStation(null);
+
+    // Als we in de Planner zaten (die geen sub-stations heeft), ga terug naar hoofdmenu
     if (activeDept === "PLANNER") {
       setActiveDept(null);
     }
   };
 
+  // Terug naar Portal logica (onderin het scherm)
+  const handleBackToPortal = () => {
+    navigate("/portal");
+  };
+
   // Functie om naar een station te gaan
   const handleNavigateToStation = (id) => {
-    // Fallback
+    // Speciale check voor Teamlead/Management hub
     if (id === "TEAMLEAD" && !activeDept) {
       setActiveDept("FITTINGS");
     }
     setCurrentStation({ id });
   };
 
-  // Configuratie Afdelingen
+  // Configuratie Afdelingen (Labels Aangepast)
   const DEPARTMENTS = [
     {
       id: "FITTINGS",
       scope: "fitting",
-      label: "Fittings",
+      label: "Fitting Productions", // Aangepast
       icon: <Database size={48} />,
       desc: "Wikkelen, CNC & Nabewerking",
       color: "text-blue-600",
@@ -59,7 +70,7 @@ const DigitalPlanningHub = ({ onBack }) => {
     {
       id: "PIPES",
       scope: "pipe",
-      label: "Pipes",
+      label: "Pipe Productions", // Aangepast
       icon: <Layers size={48} />,
       desc: "Productielijnen & BM-inspecties",
       color: "text-orange-600",
@@ -69,7 +80,7 @@ const DigitalPlanningHub = ({ onBack }) => {
     {
       id: "SPOOLS",
       scope: "spool",
-      label: "Spools",
+      label: "Spools Productions", // Aangepast
       icon: <Users size={48} />,
       desc: "Samenbouw Teams & Engineering",
       color: "text-emerald-600",
@@ -158,12 +169,9 @@ const DigitalPlanningHub = ({ onBack }) => {
     return (
       <div className="flex flex-col h-screen w-full bg-slate-50 items-center justify-start pt-24 p-6 overflow-hidden">
         <div className="w-full max-w-6xl animate-in fade-in zoom-in duration-500 text-center flex flex-col items-center">
-          <h1 className="text-4xl font-black text-slate-800 uppercase italic tracking-tighter mb-2">
+          <h1 className="text-4xl font-black text-slate-800 uppercase italic tracking-tighter mb-12">
             FPI <span className="text-blue-600">Technical Hub</span>
           </h1>
-          <p className="text-slate-400 font-bold uppercase tracking-[0.3em] text-xs mb-12">
-            Selecteer uw werkgebied
-          </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 w-full max-w-5xl">
             {/* MASTER PLANNER TEGEL */}
@@ -212,7 +220,7 @@ const DigitalPlanningHub = ({ onBack }) => {
           </div>
 
           <button
-            onClick={onBack}
+            onClick={handleBackToPortal}
             className="mt-16 bg-white p-4 px-8 rounded-2xl border-2 border-slate-100 hover:border-red-200 hover:bg-red-50 text-slate-400 hover:text-red-600 font-black uppercase text-xs flex items-center justify-center gap-3 transition-all shadow-sm hover:shadow-md active:scale-95 w-full max-w-xs"
           >
             <LogOut size={20} /> Terug naar Portal
@@ -221,7 +229,7 @@ const DigitalPlanningHub = ({ onBack }) => {
 
         {/* Footer */}
         <div className="absolute bottom-4 text-center text-slate-300 text-[10px] font-mono uppercase tracking-widest">
-          FPi Future Factory • v3.4 • Digital Planning Module
+          FPi Future Factory • v3.6 • Digital Planning Module
         </div>
       </div>
     );
@@ -253,9 +261,6 @@ const DigitalPlanningHub = ({ onBack }) => {
             <h1 className="text-4xl font-black text-slate-800 uppercase italic tracking-tighter mb-2">
               {deptInfo?.label} <span className="text-blue-600">Hub</span>
             </h1>
-            <p className="text-slate-400 font-bold uppercase tracking-[0.2em] text-xs">
-              Kies een werkstation
-            </p>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 justify-center w-full">
@@ -289,7 +294,7 @@ const DigitalPlanningHub = ({ onBack }) => {
             ))}
           </div>
 
-          {/* GROTE TERUG KNOP ONDERAAN */}
+          {/* TERUG KNOP ONDERAAN (STAP 2) */}
           <button
             onClick={() => setActiveDept(null)}
             className="mt-12 bg-white p-4 px-8 rounded-2xl border-2 border-slate-100 hover:border-blue-200 hover:bg-blue-50 text-slate-400 hover:text-blue-600 font-black uppercase text-xs flex items-center justify-center gap-3 transition-all shadow-sm hover:shadow-md active:scale-95 w-full max-w-xs"
