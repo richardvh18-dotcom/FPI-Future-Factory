@@ -1,91 +1,148 @@
-/**
- * productHelpers.js
- * Bevat logica voor productcodes, validatie en data-voorbereiding.
- */
+import { db } from "../config/firebase";
+import {
+  collection,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  getDocs,
+  query,
+  orderBy,
+  serverTimestamp,
+} from "firebase/firestore";
+import { VERIFICATION_STATUS } from "../data/constants";
 
-export const generateProductCode = (data) => {
-  const { type, mofType, angle, pressure, diameter, drilling, label } = data;
-  if (!type || !pressure || !diameter) return "";
-  let code = `${type.toUpperCase().substring(0, 3)}`;
-  if (angle) code += `-${angle}`;
-  if (mofType) {
-    const cleanMof = mofType.split("/")[0].trim();
-    code += `-${cleanMof}`;
+// Bepaal de App ID (nodig voor het juiste pad)
+const appId = typeof __app_id !== "undefined" ? __app_id : "fittings-app-v1";
+const DATA_PATH = ["artifacts", appId, "public", "data"];
+
+// --- ID Generatie ---
+
+export const generateProductId = (type, dn, pn, angle = null) => {
+  const safeType = (type || "").replace(/\s+/g, "-").toUpperCase();
+  const safeDn = dn || "0";
+  const safePn = pn || "0";
+
+  let id = `${safeType}-${safeDn}-${safePn}`;
+  if (angle) {
+    id += `-${angle}`;
   }
-  code += `-PN${pressure}-DN${diameter}`;
-  if (drilling) {
-    const cleanDrill = drilling.replace(/[^a-zA-Z0-9]/g, "");
-    if (cleanDrill) code += `-DR${cleanDrill.substring(0, 4)}`;
-  }
-  if (label) code += `-${label.substring(0, 1)}`;
-  return code;
+  return id;
+};
+
+export const generateProductCode = generateProductId;
+
+export const formatProductForSave = (data) => {
+  return JSON.parse(JSON.stringify(data));
 };
 
 export const validateProductData = (data) => {
-  const errors = [];
-  if (!data.type) errors.push("Product Type is verplicht.");
-  if (!data.pressure) errors.push("Drukklasse (PN) is verplicht.");
-  if (!data.diameter) errors.push("Diameter (DN) is verplicht.");
-  if (!data.productCode && !data.articleCode)
-    errors.push("Er kon geen Product Code gegenereerd worden.");
-  if (data.type === "Elbow" && !data.angle) {
-    errors.push("Hoek is verplicht voor bochten.");
-  }
-  return { isValid: errors.length === 0, errors };
+  if (!data.type || !data.dn || !data.pn) return false;
+  return true;
 };
 
-// SLIMME MATRIX VALIDATIE
-export const validateAgainstMatrix = (data, matrix) => {
-  if (!matrix)
-    return {
-      allowed: true,
-      warning: "Geen matrix geladen, validatie overgeslagen.",
-    };
+// --- CRUD Operations (Met Correcte Paden) ---
 
-  const connKey = data.mofType
-    ? data.mofType.split("/")[0].toUpperCase().trim()
-    : "";
-  const pnKey = String(data.pressure);
-  const typeKey = data.type;
-  const diaVal = Number(data.diameter);
-
-  // Zoek op meerdere plekken (Base, Socket, Spiggot)
-  const baseRange = matrix?.[connKey]?.[pnKey]?.[typeKey] || [];
-  const socketRange = matrix?.[connKey]?.[pnKey]?.[`${typeKey}_Socket`] || [];
-  const spiggotRange = matrix?.[connKey]?.[pnKey]?.[`${typeKey}_Spiggot`] || [];
-
-  const allAvailable = [...baseRange, ...socketRange, ...spiggotRange];
-
-  if (!allAvailable || allAvailable.length === 0) {
-    return {
-      allowed: false,
-      error: `Combinatie bestaat niet in Matrix: ${connKey} + PN${pnKey} + ${typeKey} (of _Socket/_Spiggot varianten)`,
-    };
+export const fetchProducts = async () => {
+  try {
+    // PAD FIX: Gebruik de specifieke artifacts locatie
+    const q = query(
+      collection(db, ...DATA_PATH, "products"),
+      orderBy("lastUpdated", "desc")
+    );
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+  } catch (error) {
+    console.error("Error fetching products: ", error);
+    throw error;
   }
-
-  if (!allAvailable.includes(diaVal)) {
-    return {
-      allowed: false,
-      error: `Diameter ${diaVal} is niet geactiveerd in Matrix voor ${connKey}/PN${pnKey}/${typeKey}`,
-    };
-  }
-
-  return { allowed: true };
 };
 
-export const formatProductForSave = (data) => {
-  const idToUse = data.id || data.productCode || data.articleCode;
-  return {
-    ...data,
-    id: idToUse,
-    articleCode: idToUse,
-    productCode: idToUse,
-    name: data.name || `${data.type} DN${data.diameter} PN${data.pressure}`,
-    updatedAt: new Date().toISOString(),
-    pressure: Number(data.pressure),
-    diameter: Number(data.diameter),
-    stock: Number(data.stock || 0),
-    price: Number(data.price || 0),
-    angle: data.angle ? Number(data.angle) : null,
-  };
+export const addProduct = async (productData) => {
+  try {
+    const cleanData = formatProductForSave({
+      ...productData,
+      createdAt: serverTimestamp(),
+      lastUpdated: serverTimestamp(),
+    });
+
+    // PAD FIX
+    const docRef = await addDoc(
+      collection(db, ...DATA_PATH, "products"),
+      cleanData
+    );
+    return docRef.id;
+  } catch (error) {
+    console.error("Error adding product: ", error);
+    throw error;
+  }
+};
+
+export const updateProduct = async (productId, productData) => {
+  try {
+    // PAD FIX
+    const productRef = doc(db, ...DATA_PATH, "products", productId);
+    const cleanData = formatProductForSave({
+      ...productData,
+      lastUpdated: serverTimestamp(),
+    });
+
+    await updateDoc(productRef, cleanData);
+  } catch (error) {
+    console.error("Error updating product: ", error);
+    throw error;
+  }
+};
+
+export const deleteProduct = async (productId) => {
+  try {
+    // PAD FIX
+    await deleteDoc(doc(db, ...DATA_PATH, "products", productId));
+  } catch (error) {
+    console.error("Error deleting product: ", error);
+    throw error;
+  }
+};
+
+// --- Vier-ogen Verificatie ---
+
+export const verifyProduct = async (
+  productId,
+  currentUser,
+  currentProductData
+) => {
+  if (!currentUser || !currentUser.uid) {
+    return { success: false, message: "Geen gebruiker ingelogd" };
+  }
+
+  if (currentProductData.lastModifiedBy === currentUser.uid) {
+    return {
+      success: false,
+      message:
+        "Vier-ogen principe: Je mag je eigen wijzigingen niet verifiëren.",
+    };
+  }
+
+  // PAD FIX
+  const productRef = doc(db, ...DATA_PATH, "products", productId);
+
+  try {
+    await updateDoc(productRef, {
+      verificationStatus: VERIFICATION_STATUS.VERIFIED,
+      verifiedBy: {
+        uid: currentUser.uid,
+        name: currentUser.displayName || currentUser.email || "Onbekend",
+        timestamp: serverTimestamp(),
+      },
+      active: true,
+      lastUpdated: serverTimestamp(),
+    });
+    return { success: true, message: "Product succesvol geverifieerd." };
+  } catch (error) {
+    console.error("Fout bij verifiëren:", error);
+    return { success: false, message: error.message };
+  }
 };

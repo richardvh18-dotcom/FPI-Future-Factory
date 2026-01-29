@@ -1,81 +1,90 @@
 import { useState, useEffect } from "react";
-import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
-import { getFirestore, doc, getDoc } from "firebase/firestore";
-
-// DEZE UID KRIJGT ALTIJD TOEGANG (Jouw Admin Account)
-const GOD_MODE_UID = "pFlmcq8IgRNOBxwwV8tS5f8P5BI2";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { db } from "../config/firebase";
+import {
+  doc,
+  getDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+} from "firebase/firestore";
 
 export const useAdminAuth = () => {
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [role, setRole] = useState(null); // NIEUW: We slaan de specifieke rol op
-  const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [role, setRole] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [mustChangePassword, setMustChangePassword] = useState(false); // NIEUW
+
+  const auth = getAuth();
+  const appId = typeof __app_id !== "undefined" ? __app_id : "fittings-app-v1";
 
   useEffect(() => {
-    const auth = getAuth();
-    const db = getFirestore();
-
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setLoading(true);
-
-      if (currentUser) {
-        setUser(currentUser);
-        console.log("🔍 Auth Check voor UID:", currentUser.uid);
-
-        // 1. GOD MODE CHECK
-        if (currentUser.uid.trim() === GOD_MODE_UID.trim()) {
-          console.log("⚡ God Modus Geactiveerd");
-          setIsAdmin(true);
-          setRole("admin"); // God Mode is altijd admin
-          setLoading(false);
-          return;
-        }
-
-        // 2. Reguliere Database Check
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
         try {
-          const userDocRef = doc(db, "users", currentUser.uid);
-          const userDoc = await getDoc(userDocRef);
+          let userData = null;
+          const uidRef = doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "user_roles",
+            firebaseUser.uid
+          );
+          const uidSnap = await getDoc(uidRef);
 
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
-            console.log("📄 Rol gevonden:", userData.role);
-
-            setRole(userData.role); // Sla de rol op voor het dashboard
-
-            if (userData.role === "admin" || userData.isAdmin === true) {
-              setIsAdmin(true);
-            } else {
-              setIsAdmin(false);
-            }
+          if (uidSnap.exists()) {
+            userData = uidSnap.data();
           } else {
-            console.warn("⚠️ Geen profiel gevonden.");
-            setIsAdmin(false);
+            const emailIdRef = doc(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "user_roles",
+              firebaseUser.email
+            );
+            const emailIdSnap = await getDoc(emailIdRef);
+            if (emailIdSnap.exists()) userData = emailIdSnap.data();
+          }
+
+          if (userData) {
+            const customUser = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              ...userData,
+            };
+
+            setUser(customUser);
+            setRole((userData.role || "guest").toLowerCase());
+            setIsAdmin(userData.role?.toLowerCase() === "admin");
+
+            // CHECK VOOR GEFORCEERDE WACHTWOORD WIJZIGING
+            setMustChangePassword(userData.mustChangePassword === true);
+          } else {
+            setUser({ ...firebaseUser, role: "guest" });
             setRole("guest");
+            setIsAdmin(false);
+            setMustChangePassword(false);
           }
         } catch (error) {
-          console.error("❌ Fout bij ophalen admin rechten:", error);
-          setIsAdmin(false);
-          setRole("guest");
+          setUser(null);
         }
       } else {
         setUser(null);
-        setIsAdmin(false);
         setRole(null);
+        setIsAdmin(false);
+        setMustChangePassword(false);
       }
-
       setLoading(false);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [appId, auth]);
 
-  const logout = async () => {
-    const auth = getAuth();
-    await signOut(auth);
-  };
-
-  // Nu geven we ook 'role' terug!
-  return { isAdmin, role, loading, user, logout };
+  return { user, role, isAdmin, mustChangePassword, loading };
 };
-
-export default useAdminAuth;

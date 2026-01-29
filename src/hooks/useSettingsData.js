@@ -1,8 +1,12 @@
 import { useState, useEffect } from "react";
 import { collection, onSnapshot, doc } from "firebase/firestore";
-import { db, appId } from "../config/firebase";
+import { db } from "../config/firebase";
 
 export const useSettingsData = (user) => {
+  // Gebruik de globale appId variabele voor veiligheid in deze omgeving,
+  // of fallback naar een default als de import uit config niet zou werken.
+  const appId = typeof __app_id !== "undefined" ? __app_id : "fittings-app-v1";
+
   const [settings, setSettings] = useState({
     productRange: {},
     standardFittingSpecs: [],
@@ -73,22 +77,14 @@ export const useSettingsData = (user) => {
     };
 
     // --- 1. SETTINGS (Documenten) ---
-    // AANPASSING: Gebruik snake_case namen zoals in de database
     subscribeToDoc("product_range", "productRange");
     subscribeToDoc("product_templates", "productTemplates");
-
-    // Voor general_config gebruiken we de specifieke app_settings locatie als dat nodig is,
-    // of de settings map. Uit voorzorg luisteren we hier naar settings/general_config.
     subscribeToDoc("general_config", "generalConfig");
 
     // --- 2. DATA (Collecties) ---
     subscribeToCollection("bore_dimensions", "boreDimensions");
     subscribeToCollection("tolerance_settings", "toleranceSettings");
     subscribeToCollection("standard_fitting_specs", "standardFittingSpecs");
-
-    // Voor Bell Dimensions laden we beide varianten als één lijst (optioneel)
-    // of we laten de componenten zelf kiezen. Voor nu laden we niets generieks
-    // omdat DimensionsView dit zelf regelt op basis van CB/TB keuze.
 
     const timeout = setTimeout(() => {
       setSettings((prev) => ({ ...prev, loading: false }));
@@ -98,7 +94,7 @@ export const useSettingsData = (user) => {
       listeners.forEach((unsub) => unsub());
       clearTimeout(timeout);
     };
-  }, [user]);
+  }, [user, appId]);
 
   return settings;
 };

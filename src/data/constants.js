@@ -14,6 +14,7 @@ export const GLOBAL_TOLERANCES_DEFAULT = {
   α: "+/- 0.5°",
   Weight: "+/- 5%",
 };
+
 export const TOLERANCES_BY_TYPE_DEFAULT = {
   Elbow: {
     TW: "+3 / -0 mm",
@@ -32,6 +33,7 @@ export const TOLERANCES_BY_TYPE_DEFAULT = {
     W: "+3 / -0.5W",
   },
 };
+
 export const BORE_TOLERANCES = {
   DU: "+1.5 / -0 mm",
   DBC: "+/- 0.5 mm",
@@ -39,6 +41,7 @@ export const BORE_TOLERANCES = {
   N: "",
   TF: "+/- 1.5 mm",
 };
+
 export const CONNECTION_TYPES = [
   "CB/CB",
   "TB/TB",
@@ -54,6 +57,7 @@ export const CONNECTION_TYPES = [
   "CS/CS",
   "TS/TS",
 ];
+
 export const DRILLING_TYPES = [
   "ASA 150",
   "ASA 300",
@@ -68,13 +72,18 @@ export const DRILLING_TYPES = [
   "JIS 5K",
   "JIS 10K",
 ];
+
 export const STANDARD_DIAMETERS = [
   25, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600,
   700, 800, 900, 1000, 1100, 1200, 1400,
 ];
+
 export const STANDARD_PRESSURES = [8, 12.5, 16, 20, 25, 32, 40, 50];
+
 export const ELBOW_ANGLES = [11, 15, 30, 45, 90];
+
 export const ELBOW_RATIOS = ["1.5D", "1.0D"];
+
 export const ALL_PRODUCT_TYPES = [
   "Elbow",
   "T-Equal",
@@ -91,13 +100,16 @@ export const ALL_PRODUCT_TYPES = [
   "W-Equal",
   "W-Unequal",
 ];
+
 export const PRODUCT_LABELS = [
   "Wavistrong Standard",
   "Wavistrong Non Standard",
   "Fibermar",
   "Specials",
 ];
+
 export const COUPLING_TYPES_OPTIONS = ["Geen", "TB", "CB", "TS"];
+
 export const TYPES_WITH_SECOND_DIAMETER = [
   "T-Unequal",
   "W-Unequal",
@@ -105,12 +117,14 @@ export const TYPES_WITH_SECOND_DIAMETER = [
   "Concentric Reducer",
   "Eccentric Reducer",
 ];
+
 export const FLANGE_TYPES = [
   "Standard Flange",
   "Blind Flange",
   "Stub Flange",
   "Specials",
 ];
+
 export const BELL_KEYS = [
   "B1",
   "B2",
@@ -129,6 +143,7 @@ export const BELL_KEYS = [
   "α",
   "Alpha",
 ];
+
 export const FITTING_KEYS = [
   "TW",
   "L",
@@ -140,6 +155,7 @@ export const FITTING_KEYS = [
   "α",
   "Alpha",
 ];
+
 export const TYPE_CATEGORY_MAP = {
   elbow: "elbow",
   "t-equal": "tee",
@@ -154,12 +170,14 @@ export const TYPE_CATEGORY_MAP = {
   "blind flange": "flange",
   "stub flange": "flange",
 };
+
 export const USER_ROLES = [
   { id: "admin", label: "Admin (Volledige toegang)" },
   { id: "editor", label: "Editor (Producten bewerken)" },
   { id: "inspector", label: "Testing Inspector (PDF Extra)" },
   { id: "user", label: "User (Alleen lezen)" },
 ];
+
 export const TOLERANCE_CATEGORY_GROUPS = {
   Elbow: "Elbow",
   "T-Equal": "Tee_Reducer",
@@ -176,6 +194,7 @@ export const TOLERANCE_CATEGORY_GROUPS = {
   "Stub Flange": "Flange",
   Specials: "Specials",
 };
+
 export const DEFAULT_SPECS_BY_TYPE = {
   Elbow: [
     "TW",
@@ -346,4 +365,12 @@ export const DEFAULT_SPECS_BY_TYPE = {
   "Blind Flange": ["DBC", "N", "DU", "HOD", "TF"],
   "Stub Flange": ["DBC", "N", "DU", "HOD", "TF", "L"],
   Specials: ["L", "TW", "Note"],
+};
+
+// NIEUW: Statussen voor Vier-ogen principe
+export const VERIFICATION_STATUS = {
+  CONCEPT: "concept", // Pas aangemaakt, nog niet klaar voor review
+  PENDING: "pending_review", // Klaar voor review door 2e persoon
+  VERIFIED: "verified", // Goedgekeurd door 2e persoon
+  REJECTED: "rejected", // Afgekeurd, moet worden aangepast
 };
