@@ -1,425 +1,284 @@
-import React, { useState, useEffect } from "react";
-import {
-  Mail,
-  Send,
-  Trash2,
-  User,
-  Clock,
-  Inbox,
-  Plus,
-  Loader2,
-  X,
-} from "lucide-react";
-import {
-  collection,
-  query,
-  onSnapshot,
-  orderBy,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { db, appId } from "../../config/firebase";
+import React, { useState } from "react";
+import { useMessages } from "../../hooks/useMessages";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
+import { Mail, Archive, Trash2, CheckCircle, Inbox, User } from "lucide-react";
+import { doc, updateDoc, deleteDoc } from "firebase/firestore";
+import { db } from "../../config/firebase";
+import { useNavigate } from "react-router-dom";
 
-const AdminMessagesView = ({ onBack }) => {
+const AdminMessagesView = () => {
   const { user } = useAdminAuth();
-
-  // Data State
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  // UI State
+  const { messages, loading } = useMessages(user);
+  const [activeTab, setActiveTab] = useState("inbox"); // 'inbox', 'archived'
   const [selectedMessage, setSelectedMessage] = useState(null);
-  const [isComposing, setIsComposing] = useState(false);
-  const [viewMode, setViewMode] = useState("inbox"); // 'inbox' of 'sent'
+  const navigate = useNavigate();
 
-  // Compose State
-  const [to, setTo] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const appId = typeof __app_id !== "undefined" ? __app_id : "fittings-app-v1";
 
-  // 1. DATA FETCHING
-  useEffect(() => {
-    if (!appId) return;
+  // Filter messages for tabs
+  const filteredMessages = messages.filter((m) => {
+    if (activeTab === "inbox") return !m.archived;
+    if (activeTab === "archived") return m.archived;
+    return true;
+  });
 
-    const q = query(
-      collection(db, "artifacts", appId, "public", "data", "messages"),
-      orderBy("timestamp", "desc")
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        // Fallback voor timestamp
-        timestamp: doc.data().timestamp?.toDate
-          ? doc.data().timestamp.toDate().toISOString()
-          : new Date().toISOString(),
-      }));
-      setMessages(msgs);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // 2. ACTIONS
-  const handleSendMessage = async (to, subject, body) => {
+  const handleMarkAsRead = async (msg) => {
+    if (msg.read) return;
     try {
-      await addDoc(
-        collection(db, "artifacts", appId, "public", "data", "messages"),
-        {
-          to,
-          from: user?.email,
-          fromName: user?.displayName || user?.email?.split("@")[0] || "Admin",
-          subject,
-          body,
-          timestamp: serverTimestamp(),
-          read: false,
-        }
+      const ref = doc(
+        db,
+        "artifacts",
+        appId,
+        "public",
+        "data",
+        "messages",
+        msg.id
       );
-      return true;
-    } catch (e) {
-      console.error("Send error:", e);
-      return false;
+      await updateDoc(ref, { read: true });
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const handleMarkRead = async (id) => {
+  const handleArchive = async (msg) => {
     try {
-      await updateDoc(
-        doc(db, "artifacts", appId, "public", "data", "messages", id),
-        {
-          read: true,
-          readAt: serverTimestamp(),
-        }
+      const ref = doc(
+        db,
+        "artifacts",
+        appId,
+        "public",
+        "data",
+        "messages",
+        msg.id
       );
-    } catch (e) {
-      console.error("Mark read error:", e);
+      await updateDoc(ref, { archived: !msg.archived });
+      if (selectedMessage?.id === msg.id) setSelectedMessage(null);
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Zeker weten?")) return;
+  const handleDelete = async (msg) => {
+    if (!window.confirm("Bericht definitief verwijderen?")) return;
     try {
-      await deleteDoc(
-        doc(db, "artifacts", appId, "public", "data", "messages", id)
+      const ref = doc(
+        db,
+        "artifacts",
+        appId,
+        "public",
+        "data",
+        "messages",
+        msg.id
       );
-      if (selectedMessage?.id === id) setSelectedMessage(null);
-    } catch (e) {
-      console.error("Delete error:", e);
+      await deleteDoc(ref);
+      if (selectedMessage?.id === msg.id) setSelectedMessage(null);
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  // 3. UI LOGICA
-
-  // Filterberichten
-  const receivedMessages = messages.filter(
-    (m) => m.to === user?.email || m.to === "iedereen" || m.to === "admin"
-  );
-  const sentMessages = messages.filter((m) => m.from === user?.email);
-
-  const displayedMessages =
-    viewMode === "inbox" ? receivedMessages : sentMessages;
-
-  const handleSendForm = async (e) => {
-    e.preventDefault();
-    if (!to || !subject || !body) return alert("Vul alle velden in.");
-
-    const success = await handleSendMessage(to, subject, body);
-    if (success) {
-      alert("Bericht verzonden!");
-      setIsComposing(false);
-      setTo("");
-      setSubject("");
-      setBody("");
-      setViewMode("sent");
-    } else {
-      alert("Er ging iets mis.");
-    }
-  };
-
-  const handleSelect = (msg) => {
+  const handleSelectMessage = (msg) => {
     setSelectedMessage(msg);
-    // Markeer als gelezen als het aan mij gericht is
-    if (!msg.read && (msg.to === user?.email || msg.to === "admin")) {
-      handleMarkRead(msg.id);
-    }
-  };
-
-  // Helper voor datum weergave
-  const formatDate = (isoString) => {
-    if (!isoString) return "-";
-    const date = new Date(isoString);
-    return date.toLocaleString("nl-NL", {
-      day: "2-digit",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    handleMarkAsRead(msg);
   };
 
   if (loading)
     return (
-      <div className="flex h-full items-center justify-center">
-        <Loader2 className="animate-spin text-slate-400" />
-      </div>
+      <div className="p-8 text-center text-slate-400">Berichten laden...</div>
     );
 
   return (
-    <div className="h-full bg-slate-50 flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="bg-white border-b border-slate-200 p-6 flex justify-between items-center shrink-0">
-        <div>
-          <h2 className="text-3xl font-black text-slate-800 flex items-center gap-3">
-            <Mail className="text-blue-500" size={32} />
-            Berichtencentrum
-          </h2>
-          <p className="text-sm text-slate-400 font-medium ml-11 mt-1">
-            Interne communicatie
-          </p>
-        </div>
-        <div className="flex gap-3">
-          {onBack && (
-            <button
-              onClick={onBack}
-              className="px-6 py-2 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors"
-            >
-              Terug
-            </button>
-          )}
+    <div className="flex flex-col md:flex-row h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden m-4 md:m-6 animate-in fade-in">
+      {/* Sidebar List */}
+      <div
+        className={`w-full md:w-1/3 border-r border-slate-200 flex flex-col ${
+          selectedMessage ? "hidden md:flex" : "flex"
+        }`}
+      >
+        <div className="p-4 border-b border-slate-200 flex gap-2 bg-slate-50/50">
           <button
             onClick={() => {
-              setIsComposing(true);
+              setActiveTab("inbox");
               setSelectedMessage(null);
             }}
-            className="bg-blue-600 text-white px-6 py-2 rounded-xl font-black text-xs uppercase tracking-widest flex items-center gap-2 hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all"
+            className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+              activeTab === "inbox"
+                ? "bg-blue-600 text-white shadow-md"
+                : "text-slate-500 hover:bg-slate-100"
+            }`}
           >
-            <Plus size={16} /> Nieuw Bericht
+            <Inbox size={16} /> Inbox
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab("archived");
+              setSelectedMessage(null);
+            }}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+              activeTab === "archived"
+                ? "bg-slate-800 text-white shadow-md"
+                : "text-slate-500 hover:bg-slate-100"
+            }`}
+          >
+            <Archive size={16} /> Archief
           </button>
         </div>
-      </div>
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar Lijst */}
-        <div className="w-80 bg-white border-r border-slate-200 flex flex-col">
-          <div className="p-4 border-b border-slate-100 flex gap-2">
-            <button
-              onClick={() => {
-                setViewMode("inbox");
-                setSelectedMessage(null);
-              }}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-colors ${
-                viewMode === "inbox"
-                  ? "bg-blue-50 text-blue-600"
-                  : "text-slate-500 hover:bg-slate-50"
-              }`}
-            >
-              <Inbox size={14} /> Inbox (
-              {receivedMessages.filter((m) => !m.read).length})
-            </button>
-            <button
-              onClick={() => {
-                setViewMode("sent");
-                setSelectedMessage(null);
-              }}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-colors ${
-                viewMode === "sent"
-                  ? "bg-blue-50 text-blue-600"
-                  : "text-slate-500 hover:bg-slate-50"
-              }`}
-            >
-              <Send size={14} /> Verzonden
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {displayedMessages.length === 0 && (
-              <div className="p-8 text-center text-slate-400 text-xs">
-                Geen berichten.
-              </div>
-            )}
-            {displayedMessages.map((msg) => (
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
+          {filteredMessages.length === 0 ? (
+            <div className="p-12 text-center flex flex-col items-center text-slate-400">
+              <Mail size={32} className="mb-2 opacity-50" />
+              <p className="text-sm italic font-medium">
+                Geen berichten in {activeTab}.
+              </p>
+            </div>
+          ) : (
+            filteredMessages.map((msg) => (
               <div
                 key={msg.id}
-                onClick={() => handleSelect(msg)}
-                className={`p-4 border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors ${
-                  selectedMessage?.id === msg.id ? "bg-blue-50/50" : ""
-                } ${
-                  !msg.read && viewMode === "inbox"
-                    ? "bg-blue-50 border-l-4 border-l-blue-500"
-                    : ""
-                }`}
+                onClick={() => handleSelectMessage(msg)}
+                className={`p-4 border-b border-slate-100 cursor-pointer transition-all hover:bg-slate-50 group relative
+                                    ${!msg.read ? "bg-blue-50/60" : ""} 
+                                    ${
+                                      selectedMessage?.id === msg.id
+                                        ? "bg-blue-50 border-l-4 border-l-blue-600"
+                                        : "border-l-4 border-l-transparent"
+                                    }
+                                `}
               >
-                <div className="flex justify-between items-start mb-1">
+                <div className="flex justify-between items-start mb-1.5">
                   <span
-                    className={`text-xs font-bold ${
-                      !msg.read && viewMode === "inbox"
-                        ? "text-slate-800"
-                        : "text-slate-600"
+                    className={`text-xs ${
+                      !msg.read
+                        ? "font-black text-slate-900"
+                        : "font-bold text-slate-600"
                     }`}
                   >
-                    {viewMode === "inbox" ? msg.fromName : `Aan: ${msg.to}`}
+                    {msg.from || "Systeem"}
                   </span>
-                  <span className="text-[10px] text-slate-400">
-                    {formatDate(msg.timestamp)}
+                  <span className="text-[10px] text-slate-400 whitespace-nowrap ml-2">
+                    {msg.timestamp.toLocaleDateString()}
                   </span>
                 </div>
                 <h4
-                  className={`text-sm truncate mb-1 ${
-                    !msg.read && viewMode === "inbox"
-                      ? "font-bold text-black"
-                      : "font-medium text-slate-700"
+                  className={`text-sm mb-1 truncate leading-tight ${
+                    !msg.read ? "font-bold text-blue-700" : "text-slate-700"
                   }`}
                 >
                   {msg.subject}
                 </h4>
-                <p className="text-xs text-slate-400 truncate">{msg.body}</p>
+                <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                  {msg.content}
+                </p>
+                {!msg.read && (
+                  <div className="absolute top-4 right-4 w-2 h-2 bg-blue-500 rounded-full shadow-sm"></div>
+                )}
               </div>
-            ))}
-          </div>
+            ))
+          )}
         </div>
+      </div>
 
-        {/* Content Area */}
-        <div className="flex-1 bg-slate-50 p-8 overflow-y-auto custom-scrollbar flex flex-col items-center">
-          {/* COMPOSE MODUS */}
-          {isComposing && (
-            <div className="w-full max-w-2xl bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95">
-              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                  Nieuw Bericht Schrijven
-                </h3>
+      {/* Message Detail */}
+      <div
+        className={`flex-1 flex-col bg-slate-50/30 ${
+          !selectedMessage ? "hidden md:flex" : "flex"
+        }`}
+      >
+        {selectedMessage ? (
+          <>
+            <div className="p-6 border-b border-slate-200 bg-white shadow-sm z-10">
+              <div className="flex justify-between items-start mb-4">
                 <button
-                  onClick={() => setIsComposing(false)}
-                  className="text-slate-400 hover:text-slate-600"
+                  onClick={() => setSelectedMessage(null)}
+                  className="md:hidden text-slate-400 hover:text-slate-600 mb-2"
                 >
-                  <X size={20} />
+                  Terug
                 </button>
-              </div>
-              <form onSubmit={handleSendForm} className="p-6 space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
-                    Aan
-                  </label>
-                  <input
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none"
-                    placeholder="Emailadres of 'iedereen'"
-                    value={to}
-                    onChange={(e) => setTo(e.target.value)}
-                    list="users-datalist"
-                  />
-                  <datalist id="users-datalist">
-                    <option value="iedereen" />
-                    {/* Hier zou je idealiter users uit AdminUsersView injecteren */}
-                  </datalist>
+                <div className="flex-1 pr-4">
+                  <h2 className="text-xl md:text-2xl font-black text-slate-800 leading-tight">
+                    {selectedMessage.subject}
+                  </h2>
                 </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
-                    Onderwerp
-                  </label>
-                  <input
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none"
-                    placeholder="Waar gaat het over?"
-                    value={subject}
-                    onChange={(e) => setSubject(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
-                    Bericht
-                  </label>
-                  <textarea
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-blue-500 outline-none h-40 resize-none"
-                    placeholder="Typ je bericht..."
-                    value={body}
-                    onChange={(e) => setBody(e.target.value)}
-                  />
-                </div>
-                <div className="flex justify-end pt-2">
-                  <button className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200">
-                    <Send size={16} /> Versturen
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => handleArchive(selectedMessage)}
+                    className="p-2.5 text-slate-400 hover:text-blue-600 bg-slate-50 hover:bg-blue-50 rounded-xl transition-colors border border-slate-200"
+                    title={
+                      selectedMessage.archived ? "Terugzetten" : "Archiveren"
+                    }
+                  >
+                    <Archive size={18} />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(selectedMessage)}
+                    className="p-2.5 text-slate-400 hover:text-red-600 bg-slate-50 hover:bg-red-50 rounded-xl transition-colors border border-slate-200"
+                    title="Verwijderen"
+                  >
+                    <Trash2 size={18} />
                   </button>
                 </div>
-              </form>
+              </div>
+              <div className="flex items-center gap-3 text-sm text-slate-500 bg-slate-50 p-3 rounded-xl border border-slate-100 inline-flex">
+                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold border border-blue-200">
+                  <User size={16} />
+                </div>
+                <div>
+                  <span className="font-bold text-slate-700 block text-xs uppercase tracking-wide">
+                    Van: {selectedMessage.from || "Systeem"}
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    {selectedMessage.timestamp.toLocaleString()}
+                  </span>
+                </div>
+              </div>
             </div>
-          )}
 
-          {/* READING MODUS */}
-          {!isComposing && selectedMessage && (
-            <div className="w-full max-w-3xl bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in">
-              <div className="p-8 border-b border-slate-100">
-                <div className="flex justify-between items-start mb-4">
-                  <h1 className="text-2xl font-black text-slate-800">
-                    {selectedMessage.subject}
-                  </h1>
-                  <div className="flex gap-2">
-                    <span className="bg-slate-100 text-slate-500 px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-2">
-                      <Clock size={12} />{" "}
-                      {formatDate(selectedMessage.timestamp)}
-                    </span>
-                    <button
-                      onClick={() => handleDelete(selectedMessage.id)}
-                      className="bg-red-50 text-red-500 px-3 py-1 rounded-lg text-xs font-bold hover:bg-red-100"
-                    >
-                      <Trash2 size={12} />
-                    </button>
+            <div className="p-8 overflow-y-auto flex-1 text-slate-700 leading-relaxed text-sm">
+              {selectedMessage.content.split("\n").map((line, i) => (
+                <p key={i} className="mb-3">
+                  {line}
+                </p>
+              ))}
+
+              {/* Actie knop voor validatie alerts */}
+              {selectedMessage.type === "validation_alert" && (
+                <div className="mt-8 p-6 bg-emerald-50 border border-emerald-100 rounded-2xl flex flex-col sm:flex-row items-center gap-6 shadow-sm">
+                  <div className="bg-white p-3 rounded-full shadow-sm text-emerald-600">
+                    <CheckCircle size={32} />
                   </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold">
-                    {selectedMessage.fromName?.[0]?.toUpperCase() || (
-                      <User size={20} />
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold text-slate-700">
-                      {selectedMessage.fromName}
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      {selectedMessage.from}
+                  <div className="text-center sm:text-left">
+                    <h4 className="font-bold text-emerald-900 text-lg">
+                      Validatie Vereist
+                    </h4>
+                    <p className="text-sm text-emerald-700 mt-1">
+                      Er staat een nieuw product klaar dat uw goedkeuring
+                      vereist.
                     </p>
                   </div>
-                </div>
-              </div>
-              <div className="p-8 text-slate-600 leading-relaxed whitespace-pre-wrap">
-                {selectedMessage.body}
-              </div>
-              {/* Alleen in Inbox mag je 'beantwoorden' (in deze simpele versie) */}
-              {viewMode === "inbox" && (
-                <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
                   <button
-                    onClick={() => {
-                      setIsComposing(true);
-                      setTo(selectedMessage.from);
-                      setSubject(`Re: ${selectedMessage.subject}`);
-                      setBody(
-                        `\n\n--- Op ${formatDate(
-                          selectedMessage.timestamp
-                        )} schreef ${selectedMessage.fromName}: ---\n${
-                          selectedMessage.body
-                        }`
-                      );
-                    }}
-                    className="text-blue-600 font-bold text-sm hover:underline px-4"
+                    onClick={() => navigate("/admin/products")}
+                    className="ml-auto w-full sm:w-auto px-6 py-3 bg-emerald-600 text-white text-sm font-bold rounded-xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20"
                   >
-                    Beantwoorden
+                    Ga naar Producten
                   </button>
                 </div>
               )}
             </div>
-          )}
-
-          {/* EMPTY STATE */}
-          {!isComposing && !selectedMessage && (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-300">
-              <Mail size={64} className="mb-4 opacity-20" />
-              <p className="font-bold text-lg">Selecteer een bericht</p>
+          </>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-slate-300 p-8 text-center">
+            <div className="bg-slate-100 p-6 rounded-full mb-4">
+              <Mail size={48} className="opacity-50 text-slate-400" />
             </div>
-          )}
-        </div>
+            <h3 className="text-lg font-black text-slate-400 mb-1">
+              Geen bericht geselecteerd
+            </h3>
+            <p className="text-sm">
+              Kies een bericht uit de lijst om de details te bekijken.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

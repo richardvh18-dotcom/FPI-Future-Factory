@@ -1,210 +1,263 @@
-import React, { useState, useEffect, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   ArrowLeft,
-  Scan,
   Loader2,
-  Camera,
   Zap,
   CheckCircle2,
-  ShieldAlert,
-  ArrowRight,
-  Maximize,
-  AlertTriangle,
   Search,
+  Clock,
+  ChevronRight,
+  FileText,
+  AlertCircle,
+  Package,
+  ChevronLeft,
+  CalendarDays,
+  Boxes,
   X,
+  ClipboardCheck,
+  History,
   Keyboard,
-} from "lucide-react";
+  MessageSquare,
+  Sparkles,
+  Inbox,
+  ArrowRight,
+  MapPin,
+  Tag,
+  PlayCircle,
+} from "lucide-react"; // Gecorrigeerd van 'lucide-center' naar 'lucide-react'
 import {
   collection,
-  query,
-  where,
   onSnapshot,
   doc,
   updateDoc,
   serverTimestamp,
-  getDocs,
-  limit,
+  setDoc,
 } from "firebase/firestore";
-import { db, appId } from "../../config/firebase";
+import { db } from "../../config/firebase";
+import {
+  getISOWeek,
+  addWeeks,
+  subWeeks,
+  differenceInDays,
+  format,
+  isValid,
+} from "date-fns";
+import { nl } from "date-fns/locale";
+import StatusBadge from "./common/StatusBadge";
+import ProductReleaseModal from "./modals/ProductReleaseModal";
+import ProductionStartModal from "./modals/ProductionStartModal";
+import LossenView from "./LossenView";
+import { useAdminAuth } from "../../hooks/useAdminAuth";
+import { normalizeMachine } from "../../utils/hubHelpers";
 
 /**
- * Terminal V3.2 (Mobile Responsive & Hybrid)
+ * Workstation Terminal - V19.1
+ * FIX: 'lucide-center' module error hersteld door correcte import van 'lucide-react'.
+ * De Z-index van de header blijft verlaagd zodat de global Sidebar eroverheen kan vallen.
  */
-const Terminal = () => {
-  const { stationId } = useParams();
-  const navigate = useNavigate();
+const Terminal = ({ initialStation, onBack }) => {
+  const { user } = useAdminAuth();
 
-  const isMobileScanner = stationId === "MOBILE_SCANNER";
+  const stationId =
+    typeof initialStation === "object" ? initialStation.id : initialStation;
+  const stationName =
+    typeof initialStation === "object" ? initialStation.name : initialStation;
+  const normalizedStationId = (normalizeMachine(stationId) || "")
+    .toUpperCase()
+    .trim();
 
-  // Data State
-  const [activeOrder, setActiveOrder] = useState(null);
-  const [loading, setLoading] = useState(!isMobileScanner);
+  const isNabewerking = normalizedStationId === "NABEWERKING";
 
-  // Input & UI State
-  const [input, setInput] = useState("");
-  const [showManualInput, setShowManualInput] = useState(!isMobileScanner); // Op desktop direct tonen
-  const [isValid, setIsValid] = useState(false);
+  const [activeTab, setActiveTab] = useState(
+    isNabewerking ? "lossen" : "planning"
+  );
+  const [allOrders, setAllOrders] = useState([]);
+  const [allTracked, setAllTracked] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  // Camera State
-  const [isCameraActive, setIsCameraActive] = useState(false);
-  const [cameraError, setCameraError] = useState("");
-  const scannerRef = useRef(null);
-  const inputRef = useRef(null);
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [selectedTrackedId, setSelectedTrackedId] = useState(null);
+  const [sidebarSearch, setSidebarSearch] = useState("");
+  const [showManualInput, setShowManualInput] = useState(false);
+  const [manualInputValue, setManualInputValue] = useState("");
+  const [showStartModal, setShowStartModal] = useState(false);
+  const [productToRelease, setProductToRelease] = useState(null);
 
-  // 1. DATA OPHALEN (Alleen voor Vaste Stations)
+  const [referenceDate, setReferenceDate] = useState(new Date());
+  const [showAllWeeks, setShowAllWeeks] = useState(false);
+  const selectedWeek = getISOWeek(referenceDate);
+
+  const appId = typeof __app_id !== "undefined" ? __app_id : "fittings-app-v1";
+
+  const parseDateSafe = (dateInput) => {
+    if (!dateInput) return null;
+    if (dateInput.toDate) return dateInput.toDate();
+    const d = new Date(dateInput);
+    return isValid(d) ? d : null;
+  };
+
+  const getUrgencyColor = (dateInput) => {
+    const d = parseDateSafe(dateInput);
+    if (!d) return "text-slate-400";
+    const daysUntil = differenceInDays(d, new Date());
+    if (daysUntil <= 7) return "text-red-600 font-black";
+    if (daysUntil <= 14) return "text-blue-600 font-black";
+    return "text-slate-600 font-bold";
+  };
+
+  const isOrderNew = (order) => {
+    if (!order.createdAt) return false;
+    const createdAt = order.createdAt.toMillis
+      ? order.createdAt.toMillis()
+      : new Date(order.createdAt).getTime();
+    return createdAt > Date.now() - 24 * 60 * 60 * 1000;
+  };
+
   useEffect(() => {
-    if (isMobileScanner) return;
+    if (!stationId) return;
+    setLoading(true);
 
-    const q = query(
+    const unsubOrders = onSnapshot(
       collection(db, "artifacts", appId, "public", "data", "digital_planning"),
-      where("stationId", "==", stationId),
-      where("status", "==", "active")
+      (snap) => {
+        setAllOrders(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      }
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        const orderData = snapshot.docs[0].data();
-        setActiveOrder({ id: snapshot.docs[0].id, ...orderData });
-      } else {
-        setActiveOrder(null);
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [stationId, isMobileScanner]);
-
-  // 2. INPUT VALIDATIE (15 cijfers 40... OF Ordernummer)
-  useEffect(() => {
-    const clean = input.trim().toUpperCase();
-    const isLot = clean.length === 15 && clean.startsWith("40");
-    const isOrder = clean.length > 5; // Simpele check voor ordernummer
-    setIsValid(isLot || isOrder);
-  }, [input]);
-
-  // 3. CAMERA STARTEN
-  const startCamera = async () => {
-    if (isCameraActive) return;
-    setIsCameraActive(true);
-    setCameraError("");
-    setShowManualInput(false);
-
-    // Wacht op DOM
-    await new Promise((r) => setTimeout(r, 300));
-
-    if (!window.Html5Qrcode) {
-      setCameraError("Scanner software niet geladen.");
-      setIsCameraActive(false);
-      return;
-    }
-
-    try {
-      const scanner = new window.Html5Qrcode("reader");
-      scannerRef.current = scanner;
-
-      await scanner.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
-        (decodedText) => {
-          if (decodedText) {
-            if (navigator.vibrate) navigator.vibrate(200);
-            handleScanResult(decodedText);
-          }
-        },
-        () => {}
-      );
-    } catch (err) {
-      console.error("Camera error:", err);
-      setCameraError("Geen camera toegang. Gebruik HTTPS.");
-      setIsCameraActive(false);
-    }
-  };
-
-  const stopCamera = async () => {
-    if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current.clear();
-      } catch (e) {}
-      scannerRef.current = null;
-    }
-    setIsCameraActive(false);
-  };
-
-  // 4. SLIM ZOEKEN & VERWERKEN
-  const handleScanResult = async (scannedValue) => {
-    if (!scannedValue) return;
-    const term = scannedValue.trim().toUpperCase();
-    setInput(term);
-
-    // Als we alleen aan het zoeken zijn (Mobiele Scanner zonder actieve order)
-    if (isMobileScanner && !activeOrder) {
-      setLoading(true);
-      try {
-        // Zoek op Lotnummer
-        let q = query(
-          collection(
-            db,
-            "artifacts",
-            appId,
-            "public",
-            "data",
-            "digital_planning"
-          ),
-          where("lotNumber", "==", term),
-          limit(1)
-        );
-        let snap = await getDocs(q);
-
-        // Zoek op Ordernummer
-        if (snap.empty) {
-          q = query(
-            collection(
-              db,
-              "artifacts",
-              appId,
-              "public",
-              "data",
-              "digital_planning"
-            ),
-            where("orderId", "==", term),
-            limit(1)
-          );
-          snap = await getDocs(q);
-        }
-
-        if (!snap.empty) {
-          const data = snap.docs[0].data();
-          setActiveOrder({ id: snap.docs[0].id, ...data });
-          stopCamera(); // Stop camera als we iets gevonden hebben
-        } else {
-          alert("Geen order of lotnummer gevonden: " + term);
-          setInput("");
-        }
-      } catch (e) {
-        alert("Fout bij zoeken: " + e.message);
-      } finally {
+    const unsubProducts = onSnapshot(
+      collection(db, "artifacts", appId, "public", "data", "tracked_products"),
+      (snap) => {
+        setAllTracked(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
         setLoading(false);
       }
-    } else {
-      // We hebben al een order, of het is een vaste terminal -> dit is een bevestiging
-      // Stop camera voor UX
-      stopCamera();
-    }
-  };
+    );
 
-  const handleConfirm = async () => {
-    // Als we in zoekmodus zitten en handmatig iets hebben getypt:
-    if (isMobileScanner && !activeOrder && input) {
-      handleScanResult(input);
-      return;
-    }
+    return () => {
+      unsubOrders();
+      unsubProducts();
+    };
+  }, [appId, stationId]);
 
-    if (!activeOrder) return;
+  const myOrders = useMemo(() => {
+    return allOrders.filter(
+      (o) =>
+        (normalizeMachine(o.machine) || "").toUpperCase() ===
+        normalizedStationId
+    );
+  }, [allOrders, normalizedStationId]);
 
+  const myTracked = useMemo(() => {
+    return allTracked.filter(
+      (p) =>
+        (normalizeMachine(p.machine) || "").toUpperCase() ===
+        normalizedStationId
+    );
+  }, [allTracked, normalizedStationId]);
+
+  const productionProgressMap = useMemo(() => {
+    const map = {};
+    allTracked.forEach((p) => {
+      if (!map[p.orderId]) map[p.orderId] = 0;
+      map[p.orderId]++;
+    });
+    return map;
+  }, [allTracked]);
+
+  const activeInbound = useMemo(() => {
+    return myTracked
+      .filter((p) => p.status === "In Production" || p.status === "Held_QC")
+      .sort(
+        (a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0)
+      );
+  }, [myTracked]);
+
+  const activeWikkelingen = useMemo(() => {
+    const active = myTracked.filter(
+      (p) => p.status === "In Production" || p.status === "Held_QC"
+    );
+    if (!sidebarSearch) return active;
+    const term = sidebarSearch.toLowerCase();
+    return active.filter(
+      (p) =>
+        (p.lotNumber || "").toLowerCase().includes(term) ||
+        (p.orderId || "").toLowerCase().includes(term)
+    );
+  }, [myTracked, sidebarSearch]);
+
+  const filteredOrders = useMemo(() => {
+    const base = myOrders.filter((o) => {
+      if (o.status !== "pending" && o.status !== "in_progress") return false;
+      if (showAllWeeks || sidebarSearch) return true;
+      const oWeek = o.weekNumber || o.week;
+      return oWeek === selectedWeek;
+    });
+    if (!sidebarSearch)
+      return base.sort((a, b) =>
+        a.isUrgent === b.isUrgent ? 0 : a.isUrgent ? -1 : 1
+      );
+    const term = sidebarSearch.toLowerCase();
+    return base.filter(
+      (o) =>
+        (o.orderId || "").toLowerCase().includes(term) ||
+        (o.item || "").toLowerCase().includes(term)
+    );
+  }, [myOrders, selectedWeek, showAllWeeks, sidebarSearch]);
+
+  const selectedOrder = useMemo(
+    () =>
+      myOrders.find(
+        (o) => o.id === selectedOrderId || o.orderId === selectedOrderId
+      ),
+    [myOrders, selectedOrderId]
+  );
+  const selectedWikkeling = useMemo(
+    () => activeWikkelingen.find((p) => p.id === selectedTrackedId),
+    [activeWikkelingen, selectedTrackedId]
+  );
+
+  const handleStartProduction = async (order, lot) => {
     try {
-      setLoading(true);
+      const timestamp = serverTimestamp();
+      const cleanOrderId = String(order.orderId).trim();
+      const cleanItemCode = String(order.itemCode || order.productId).trim();
+      const docId = `${cleanOrderId}_${cleanItemCode}_${lot}`.replace(
+        /[^a-zA-Z0-9]/g,
+        "_"
+      );
+
+      await setDoc(
+        doc(
+          db,
+          "artifacts",
+          appId,
+          "public",
+          "data",
+          "tracked_products",
+          docId
+        ),
+        {
+          id: docId,
+          orderId: order.orderId,
+          lotNumber: lot,
+          itemCode: cleanItemCode,
+          machine: normalizedStationId,
+          stationLabel: stationName,
+          status: "In Production",
+          currentStep: "Wikkelen",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          history: [
+            {
+              action: "Start Wikkelen",
+              station: stationName,
+              timestamp: new Date().toISOString(),
+              user: user?.email || "Operator",
+            },
+          ],
+          item: order.item || "",
+        }
+      );
+
       await updateDoc(
         doc(
           db,
@@ -213,217 +266,645 @@ const Terminal = () => {
           "public",
           "data",
           "digital_planning",
-          activeOrder.id
+          order.id
         ),
         {
-          status: "completed",
-          completedAt: serverTimestamp(),
-          scanLog: input,
-          finishedBy: isMobileScanner ? "MobileScanner" : stationId,
+          status: "in_progress",
+          activeLot: lot,
+          actualStart: timestamp,
         }
       );
 
-      alert("Gereed gemeld!");
-      setActiveOrder(null);
-      setInput("");
-      setLoading(false);
-      setShowManualInput(false); // Reset UI
-
-      if (!isMobileScanner) navigate("/digital-planning");
-    } catch (e) {
-      setLoading(false);
-      alert("Fout: " + e.message);
+      setShowStartModal(false);
+      if (!isNabewerking) setActiveTab("wikkelen");
+    } catch (err) {
+      alert("Fout: " + err.message);
     }
   };
 
   if (loading)
     return (
-      <div className="h-screen flex items-center justify-center bg-slate-900 text-white">
-        <Loader2 className="animate-spin" size={48} />
+      <div className="flex h-screen items-center justify-center bg-white">
+        <Loader2 className="animate-spin text-blue-600" size={48} />
       </div>
     );
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col p-4 md:p-8 overflow-y-auto">
-      {/* Back Button */}
-      <button
-        onClick={() =>
-          navigate(isMobileScanner ? "/portal" : "/digital-planning")
-        }
-        className="fixed top-4 left-4 z-50 p-2 bg-white/90 backdrop-blur-md rounded-full shadow-sm text-slate-500 hover:text-slate-900 border border-slate-200"
-      >
-        <ArrowLeft size={24} />
-      </button>
-
-      <div className="flex-1 flex flex-col items-center justify-center w-full max-w-5xl mx-auto">
-        <div
-          className={`w-full grid grid-cols-1 ${
-            activeOrder ? "lg:grid-cols-2" : ""
-          } gap-6 lg:gap-12 items-center`}
-        >
-          {/* LINKER KOLOM: CAMERA / KEUZE */}
-          <div
-            className={`transition-all duration-300 w-full ${
-              !showManualInput && !activeOrder ? "block" : "hidden lg:block"
-            }`}
+    <div className="flex flex-col h-full bg-slate-50 text-slate-900 overflow-hidden animate-in fade-in">
+      {/* HEADER - GEWIJZIGD: Z-30 in plaats van Z-50 om sidebar ruimte te geven */}
+      <div className="p-4 bg-white border-b border-slate-200 flex justify-between items-center shrink-0 z-30 shadow-sm px-6 text-left">
+        <div className="flex items-center gap-3 text-left">
+          <button
+            onClick={onBack}
+            className="p-3 bg-slate-100 rounded-2xl text-slate-600 active:scale-90 transition-all hover:bg-slate-200 shadow-sm"
           >
-            <div className="bg-slate-900 rounded-[40px] aspect-square relative overflow-hidden border-8 border-white shadow-2xl mx-auto w-full max-w-md">
-              {/* Camera View */}
-              <div
-                id="reader"
-                className="absolute inset-0 bg-black w-full h-full object-cover z-0"
-              ></div>
+            <ArrowLeft size={24} />
+          </button>
+          <div className="text-left">
+            <h1 className="text-lg md:text-xl font-black uppercase tracking-widest text-slate-900 italic leading-none">
+              {stationName}
+            </h1>
+            <p className="hidden md:block text-[10px] text-blue-600 font-bold uppercase mt-1 tracking-tighter">
+              {isNabewerking
+                ? "Centraal Ontvangst & Afwerking"
+                : "Machine Terminal"}
+            </p>
+          </div>
+        </div>
 
-              {/* Overlay: Keuze Menu (Als camera uit is) */}
-              {!isCameraActive && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 text-slate-500 p-8 text-center z-10">
-                  <Scan size={64} className="mb-4 opacity-50" />
-                  <h2 className="text-white text-2xl font-black uppercase italic mb-2">
-                    {isMobileScanner ? "Mobiele Scanner" : "Workstation"}
-                  </h2>
+        {!isNabewerking && (
+          <div className="flex bg-slate-100 p-1 rounded-2xl mx-2">
+            <button
+              onClick={() => setActiveTab("planning")}
+              className={`px-4 md:px-6 py-2 rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all ${
+                activeTab === "planning"
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-slate-500"
+              }`}
+            >
+              Planning
+            </button>
+            <button
+              onClick={() => setActiveTab("wikkelen")}
+              className={`px-4 md:px-6 py-2 rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all ${
+                activeTab === "wikkelen"
+                  ? "bg-white text-orange-600 shadow-sm"
+                  : "text-slate-500"
+              }`}
+            >
+              Wikkelen
+            </button>
+            <button
+              onClick={() => setActiveTab("lossen")}
+              className={`px-4 md:px-6 py-2 rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all ${
+                activeTab === "lossen"
+                  ? "bg-white text-emerald-600 shadow-sm"
+                  : "text-slate-500"
+              }`}
+            >
+              Lossen
+            </button>
+          </div>
+        )}
 
-                  <div className="flex flex-col gap-4 w-full mt-6">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowManualInput(true)}
+            className="p-3 bg-white border-2 border-slate-100 text-slate-600 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center gap-2 shadow-sm"
+          >
+            <Keyboard size={18} />{" "}
+            <span className="hidden sm:inline">Zoeken</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {isNabewerking ? (
+          <div className="flex-1 flex flex-col lg:flex-row overflow-hidden bg-white">
+            <div className="w-full lg:w-1/3 border-r border-slate-100 flex flex-col bg-slate-50/40">
+              <div className="p-6 border-b border-slate-100 bg-white text-left">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 text-left leading-none">
+                    <Inbox size={16} className="text-blue-500" /> Wachtrij
+                    Ontvangst
+                  </h3>
+                  <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded-md text-[9px] font-black uppercase">
+                    {activeInbound.length}
+                  </span>
+                </div>
+                <div className="relative">
+                  <Search
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300"
+                    size={16}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Filter lotnummer..."
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 transition-all shadow-sm"
+                    value={sidebarSearch}
+                    onChange={(e) => setSidebarSearch(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar text-left text-left">
+                {activeInbound.length === 0 ? (
+                  <div className="p-10 text-center flex flex-col items-center opacity-30 mt-10">
+                    <Package size={48} className="text-slate-300 mb-4" />
+                    <p className="text-[10px] font-black uppercase tracking-widest text-left">
+                      Geen inkomende items
+                    </p>
+                  </div>
+                ) : (
+                  activeInbound
+                    .filter(
+                      (p) =>
+                        !sidebarSearch ||
+                        p.lotNumber
+                          ?.toLowerCase()
+                          .includes(sidebarSearch.toLowerCase())
+                    )
+                    .map((prod) => (
+                      <div
+                        key={prod.id}
+                        onClick={() => setSelectedTrackedId(prod.id)}
+                        className={`p-5 rounded-[25px] border-2 transition-all cursor-pointer flex items-center justify-between group ${
+                          selectedTrackedId === prod.id
+                            ? "bg-blue-600 border-blue-600 text-white shadow-xl translate-x-1"
+                            : "bg-white border-slate-100 hover:border-blue-200"
+                        }`}
+                      >
+                        <div className="text-left text-left">
+                          <h4 className="font-black italic text-lg leading-none mb-1">
+                            {prod.lotNumber}
+                          </h4>
+                          <div className="flex items-center gap-2">
+                            <p
+                              className={`text-[10px] font-bold uppercase tracking-tighter ${
+                                selectedTrackedId === prod.id
+                                  ? "text-blue-100"
+                                  : "text-slate-400"
+                              }`}
+                            >
+                              Model: {prod.itemCode}
+                            </p>
+                            <span
+                              className={`text-[9px] font-black px-1.5 rounded border ${
+                                selectedTrackedId === prod.id
+                                  ? "border-white/20 bg-white/10"
+                                  : "border-slate-100 bg-slate-50"
+                              }`}
+                            >
+                              {prod.lastStation || "???"}
+                            </span>
+                          </div>
+                        </div>
+                        <ChevronRight
+                          size={18}
+                          className={
+                            selectedTrackedId === prod.id
+                              ? "text-white"
+                              : "text-slate-300"
+                          }
+                        />
+                      </div>
+                    ))
+                )}
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-50 overflow-y-auto custom-scrollbar p-6 lg:p-12 text-left text-left">
+              {selectedTrackedId ? (
+                <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-right-4 duration-500">
+                  <div className="bg-slate-900 rounded-[45px] p-8 text-white shadow-2xl flex flex-col md:row justify-between items-center relative overflow-hidden text-left">
+                    <div className="absolute top-0 right-0 p-8 opacity-5">
+                      <Package size={180} />
+                    </div>
+                    <div className="text-left flex-1">
+                      <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest block mb-2 text-left">
+                        Actueel Dossier
+                      </span>
+                      <h2 className="text-4xl md:text-5xl font-black italic tracking-tighter leading-none text-left">
+                        {selectedWikkeling?.lotNumber}
+                      </h2>
+                    </div>
+                    <div className="bg-white/10 px-6 py-3 rounded-[20px] border border-white/5 text-right">
+                      <span className="text-[9px] font-black text-slate-500 uppercase block mb-1 text-left">
+                        Herkomst
+                      </span>
+                      <span className="text-lg font-black text-emerald-400 uppercase italic tracking-widest">
+                        {selectedWikkeling?.lastStation || "Onbekend"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-[45px] p-8 md:p-12 border border-slate-200 shadow-sm space-y-10 text-left text-left">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-10 text-left">
+                      <div className="space-y-6 text-left">
+                        <div className="text-left">
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 text-left">
+                            Item Info
+                          </span>
+                          <p className="text-2xl font-black text-slate-800 italic uppercase leading-tight text-left">
+                            {selectedWikkeling?.item}
+                          </p>
+                        </div>
+                        <div className="p-5 bg-slate-50 rounded-3xl border-2 border-slate-100 text-left text-left">
+                          <span className="text-[9px] font-black text-slate-400 uppercase block mb-1 text-left">
+                            Code
+                          </span>
+                          <p className="text-sm font-mono font-black text-blue-700 text-left">
+                            {selectedWikkeling?.itemCode}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="space-y-6 text-left text-left">
+                        <div className="text-left">
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 text-left text-left text-left">
+                            Gekoppelde Order
+                          </span>
+                          <p className="text-2xl font-black text-slate-800 italic leading-none text-left">
+                            {selectedWikkeling?.orderId}
+                          </p>
+                        </div>
+                        <StatusBadge status={selectedWikkeling?.status} />
+                      </div>
+                    </div>
                     <button
-                      onClick={startCamera}
-                      className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-5 rounded-2xl font-black uppercase text-sm shadow-lg flex items-center justify-center gap-3 transform active:scale-95 transition-all w-full"
+                      onClick={() => setProductToRelease(selectedWikkeling)}
+                      className="w-full py-8 bg-slate-900 text-white rounded-[35px] font-black uppercase text-lg shadow-2xl hover:bg-emerald-600 transition-all flex items-center justify-center gap-6 active:scale-95 group"
                     >
-                      <Camera size={24} /> Start Camera
-                    </button>
-
-                    <button
-                      onClick={() => setShowManualInput(true)}
-                      className="bg-slate-800 hover:bg-slate-700 text-white px-6 py-5 rounded-2xl font-black uppercase text-sm shadow-lg flex items-center justify-center gap-3 transform active:scale-95 transition-all w-full"
-                    >
-                      <Keyboard size={24} /> Handmatig
+                      <ClipboardCheck size={32} /> Afronden & Vrijgeven
                     </button>
                   </div>
                 </div>
-              )}
-
-              {/* Overlay: Camera Frame (Als camera aan is) */}
-              {isCameraActive && (
-                <div className="absolute inset-0 pointer-events-none z-10">
-                  <div className="absolute top-8 left-8 w-16 h-16 border-t-4 border-l-4 border-blue-500 rounded-tl-3xl opacity-80"></div>
-                  <div className="absolute top-8 right-8 w-16 h-16 border-t-4 border-r-4 border-blue-500 rounded-tr-3xl opacity-80"></div>
-                  <div className="absolute bottom-8 left-8 w-16 h-16 border-b-4 border-l-4 border-blue-500 rounded-bl-3xl opacity-80"></div>
-                  <div className="absolute bottom-8 right-8 w-16 h-16 border-b-4 border-r-4 border-blue-500 rounded-br-3xl opacity-80"></div>
-
-                  <button
-                    onClick={stopCamera}
-                    className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-white/20 backdrop-blur-md text-white px-6 py-2 rounded-full font-bold text-xs pointer-events-auto hover:bg-white/30"
-                  >
-                    Stop Camera
-                  </button>
-                </div>
-              )}
-
-              {cameraError && (
-                <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-8 text-center z-20">
-                  <AlertTriangle size={48} className="text-red-500 mb-4" />
-                  <p className="text-white font-bold mb-2">{cameraError}</p>
-                  <button
-                    onClick={() => setCameraError("")}
-                    className="bg-slate-700 text-white px-4 py-2 rounded-lg text-xs font-bold"
-                  >
-                    Sluiten
-                  </button>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center opacity-40 text-center">
+                  <Inbox size={80} className="text-slate-300 mb-4" />
+                  <h4 className="text-3xl font-black uppercase italic tracking-tighter">
+                    Wacht op selectie
+                  </h4>
+                  <p className="text-sm font-medium text-slate-400">
+                    Kies een lotnummer om te verwerken
+                  </p>
                 </div>
               )}
             </div>
           </div>
-
-          {/* RECHTS: HANDMATIG & INFO */}
-          {(showManualInput || activeOrder) && (
-            <div className="bg-white rounded-[40px] p-6 md:p-12 shadow-xl border border-slate-100 flex flex-col animate-in slide-in-from-bottom-4 w-full max-w-md mx-auto">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h1 className="text-2xl font-black text-slate-800 uppercase italic tracking-tighter">
-                    {activeOrder ? "Order Gevonden" : "Handmatig"}
-                  </h1>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                    {activeOrder ? "Bevestig om af te ronden" : "Typ nummer"}
-                  </p>
-                </div>
-                {!activeOrder && (
-                  <button
-                    onClick={() => setShowManualInput(false)}
-                    className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-colors"
-                  >
-                    <X size={20} />
-                  </button>
-                )}
-                {activeOrder && (
-                  <button
-                    onClick={() => {
-                      setActiveOrder(null);
-                      setInput("");
-                      setShowManualInput(false);
-                    }}
-                    className="p-2 bg-red-50 text-red-500 rounded-full hover:bg-red-100 transition-colors"
-                  >
-                    <X size={20} />
-                  </button>
-                )}
-              </div>
-
-              <div className="space-y-4">
-                <div className="relative">
-                  <input
-                    ref={inputRef}
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleConfirm()}
-                    className="w-full bg-slate-50 border-4 border-slate-100 rounded-2xl p-4 text-center text-xl font-bold uppercase focus:border-blue-500 outline-none"
-                    placeholder="Nummer..."
-                  />
-                </div>
-
-                <button
-                  onClick={handleConfirm}
-                  className={`w-full py-4 rounded-2xl font-black uppercase text-sm shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 ${
-                    input || activeOrder
-                      ? "bg-slate-900 text-white hover:bg-blue-600"
-                      : "bg-slate-200 text-slate-400 cursor-not-allowed"
+        ) : (
+          <div className="flex-1 overflow-hidden flex flex-col lg:flex-row text-left">
+            {activeTab === "planning" ? (
+              <>
+                <div
+                  className={`w-full lg:w-5/12 p-4 md:p-6 bg-white border-r border-slate-100 flex flex-col overflow-hidden text-left ${
+                    selectedOrderId ? "hidden lg:flex" : "flex"
                   }`}
                 >
-                  {activeOrder ? "Gereed Melden" : "Zoeken"}{" "}
-                  <ArrowRight size={16} />
-                </button>
-              </div>
-
-              {activeOrder && (
-                <div className="mt-8 pt-6 border-t border-slate-100">
-                  <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="font-mono font-bold text-blue-600">
-                        {activeOrder.orderId}
+                  <div className="relative mb-4 group text-left">
+                    <Search
+                      className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"
+                      size={18}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Zoek order..."
+                      className="w-full pl-12 pr-10 py-4 bg-slate-50 border-2 border-slate-100 rounded-[20px] text-sm font-bold outline-none focus:border-blue-500 transition-all"
+                      value={sidebarSearch}
+                      onChange={(e) => setSidebarSearch(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex justify-between items-center bg-slate-50 p-2 rounded-[25px] border border-slate-100 mb-6 shrink-0 text-left">
+                    <button
+                      onClick={() =>
+                        setReferenceDate(subWeeks(referenceDate, 1))
+                      }
+                      className="p-3 bg-white rounded-2xl shadow-sm hover:text-blue-500 transition-all"
+                    >
+                      <ChevronLeft size={20} />
+                    </button>
+                    <div className="text-center px-4 text-left">
+                      <span className="text-[10px] font-black text-slate-400 uppercase block mb-0.5 text-center">
+                        Week
                       </span>
-                      <span className="bg-white text-slate-800 text-[10px] font-black px-2 py-1 rounded shadow-sm">
-                        {activeOrder.plan} stuks
+                      <span className="text-xl font-black text-slate-900 italic tracking-tighter text-center">
+                        {showAllWeeks || sidebarSearch
+                          ? "Resultaten"
+                          : selectedWeek}
                       </span>
                     </div>
-                    <p className="font-bold text-slate-800 leading-tight">
-                      {activeOrder.item}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-2 font-mono">
-                      Lot: {activeOrder.lotNumber}
-                    </p>
+                    <button
+                      onClick={() =>
+                        setReferenceDate(addWeeks(referenceDate, 1))
+                      }
+                      className="p-3 bg-white rounded-2xl shadow-sm hover:text-blue-500 transition-all"
+                    >
+                      <ChevronRight size={20} />
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-1 text-left text-left">
+                    {filteredOrders.length === 0 ? (
+                      <div className="p-12 text-center opacity-30 italic font-bold uppercase text-xs">
+                        Geen orders gevonden
+                      </div>
+                    ) : (
+                      filteredOrders.map((order) => {
+                        const produced =
+                          productionProgressMap[order.orderId] || 0;
+                        const total = parseInt(order.plan) || 1;
+                        const isNew = isOrderNew(order);
+                        return (
+                          <div
+                            key={order.id}
+                            onClick={() => setSelectedOrderId(order.id)}
+                            className={`p-4 md:p-5 rounded-[25px] border-2 transition-all cursor-pointer flex items-center justify-between relative overflow-hidden text-left ${
+                              selectedOrderId === order.id
+                                ? "bg-blue-50 border-blue-500 shadow-sm"
+                                : "bg-white border-slate-100 hover:border-blue-200"
+                            }`}
+                          >
+                            {isNew && (
+                              <div className="absolute top-0 left-0 px-2 py-0.5 bg-emerald-500 text-white text-[7px] font-black uppercase tracking-tighter rounded-br-lg z-10">
+                                Nieuw
+                              </div>
+                            )}
+                            <div className="flex items-center gap-4 text-left text-left overflow-hidden">
+                              <div
+                                className={`p-3 rounded-2xl shrink-0 ${
+                                  selectedOrderId === order.id
+                                    ? "bg-blue-600 text-white"
+                                    : "bg-slate-50 text-slate-400"
+                                }`}
+                              >
+                                <FileText size={20} />
+                              </div>
+                              <div className="text-left text-left overflow-hidden text-left">
+                                <h4 className="font-black text-sm leading-none flex items-center gap-2 text-left">
+                                  {order.orderId}{" "}
+                                  {isNew && (
+                                    <Sparkles
+                                      size={10}
+                                      className="text-emerald-500"
+                                    />
+                                  )}
+                                </h4>
+                                <p className="text-[10px] font-bold text-slate-400 truncate uppercase text-left">
+                                  {order.item}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-1 shrink-0 text-right text-right">
+                              <span className="text-[10px] font-black text-slate-900 block italic leading-none">
+                                {produced} / {total} ST
+                              </span>
+                              <span
+                                className={`text-[9px] uppercase tracking-tighter ${getUrgencyColor(
+                                  order.deliveryDate
+                                )}`}
+                              >
+                                {order.deliveryDate
+                                  ? format(
+                                      parseDateSafe(order.deliveryDate),
+                                      "dd-MM"
+                                    )
+                                  : "--"}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+                <div
+                  className={`flex-1 p-6 md:p-8 bg-slate-50 flex flex-col overflow-y-auto custom-scrollbar text-left text-left ${
+                    !selectedOrderId ? "hidden lg:flex" : "flex"
+                  }`}
+                >
+                  {selectedOrder ? (
+                    <div className="space-y-6 text-left text-left animate-in slide-in-from-right-4 duration-500">
+                      <div className="bg-slate-900 rounded-[35px] p-6 text-white shadow-xl flex justify-between items-center relative overflow-hidden text-left text-left">
+                        <button
+                          onClick={() => setSelectedOrderId(null)}
+                          className="lg:hidden p-2 text-white/50 mr-2"
+                        >
+                          <ArrowLeft size={20} />
+                        </button>
+                        <div className="text-left text-left flex-1">
+                          <span className="text-[8px] font-black text-blue-400 uppercase block mb-1 text-left">
+                            Actueel Dossier
+                          </span>
+                          <h2 className="text-3xl font-black italic tracking-tighter leading-none text-left">
+                            {selectedOrder.orderId}
+                          </h2>
+                        </div>
+                        <StatusBadge status={selectedOrder.status} />
+                      </div>
+                      <div className="bg-white rounded-[40px] p-8 border border-slate-200 shadow-sm space-y-8 text-left text-left">
+                        <div className="flex flex-col md:flex-row justify-between items-start gap-6 text-left">
+                          <div className="space-y-2 flex-1 text-left text-left">
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 text-left">
+                              Omschrijving
+                            </span>
+                            <h3 className="text-xl font-black text-slate-800 italic uppercase leading-tight text-left">
+                              {selectedOrder.item}
+                            </h3>
+                          </div>
+                          <div className="flex gap-4">
+                            <div className="bg-slate-50 px-6 py-4 rounded-3xl border border-slate-100 text-center">
+                              <span className="text-[9px] font-black text-slate-400 uppercase block mb-1 text-center">
+                                Gepland
+                              </span>
+                              <span className="text-2xl font-black text-slate-800 italic">
+                                {selectedOrder.plan} ST
+                              </span>
+                            </div>
+                            <div className="bg-blue-50 px-6 py-4 rounded-3xl border border-blue-100 text-center">
+                              <span className="text-[9px] font-black text-blue-500 uppercase block mb-1 text-center">
+                                Nog doen
+                              </span>
+                              <span className="text-2xl font-black text-blue-600 italic">
+                                {Math.max(
+                                  0,
+                                  parseInt(selectedOrder.plan) -
+                                    (productionProgressMap[
+                                      selectedOrder.orderId
+                                    ] || 0)
+                                )}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setShowStartModal(true)}
+                          className="w-full py-6 bg-blue-600 text-white rounded-[30px] font-black uppercase text-base shadow-xl hover:bg-blue-500 transition-all flex items-center justify-center gap-4 active:scale-95"
+                        >
+                          <PlayCircle size={28} /> Start Productie
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center opacity-30 text-center p-20">
+                      <FileText size={80} className="mb-6 text-slate-200" />
+                      <h4 className="text-2xl font-black uppercase italic text-slate-300">
+                        Selecteer een order
+                      </h4>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : activeTab === "wikkelen" ? (
+              <>
+                <div
+                  className={`w-full lg:w-5/12 p-6 bg-white border-r border-slate-100 flex flex-col overflow-hidden text-left text-left ${
+                    selectedTrackedId ? "hidden lg:flex" : "flex"
+                  }`}
+                >
+                  <div className="flex justify-between items-center mb-6 px-2 text-left text-left">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 text-left text-left">
+                      <Zap size={16} className="text-orange-500" /> Actieve
+                      Wikkelingen
+                    </h3>
+                    <span className="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-[10px] font-black">
+                      {activeWikkelingen.length}
+                    </span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar text-left text-left">
+                    {activeWikkelingen.map((prod) => (
+                      <div
+                        key={prod.id}
+                        onClick={() => setSelectedTrackedId(prod.id)}
+                        className={`p-5 rounded-[30px] border-2 transition-all cursor-pointer flex items-center justify-between text-left ${
+                          selectedTrackedId === prod.id
+                            ? "bg-orange-50 border-orange-500 shadow-md"
+                            : "bg-white border-slate-100"
+                        }`}
+                      >
+                        <div className="flex items-center gap-4 text-left text-left">
+                          <div className="p-3 bg-orange-50 text-orange-600 rounded-2xl">
+                            <Zap size={20} />
+                          </div>
+                          <div className="text-left text-left">
+                            <h4 className="font-black italic leading-none mb-1">
+                              {prod.lotNumber}
+                            </h4>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">
+                              Order: {prod.orderId}
+                            </p>
+                          </div>
+                        </div>
+                        <ChevronRight size={18} className="text-slate-300" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div
+                  className={`flex-1 p-6 md:p-8 bg-slate-50 flex flex-col overflow-y-auto custom-scrollbar text-left text-left ${
+                    !selectedTrackedId ? "hidden lg:flex" : "flex"
+                  }`}
+                >
+                  {selectedWikkeling ? (
+                    <div className="max-w-4xl mx-auto space-y-6 text-left text-left animate-in slide-in-from-right-4 duration-500">
+                      <div className="bg-slate-900 rounded-[35px] p-6 text-white flex justify-between items-center border-4 border-orange-500/20 relative overflow-hidden shadow-xl text-left text-left text-left text-left">
+                        <button
+                          onClick={() => setSelectedTrackedId(null)}
+                          className="lg:hidden p-2 text-white/50 mr-2"
+                        >
+                          <ArrowLeft size={20} />
+                        </button>
+                        <div className="text-left text-left flex-1">
+                          <span className="text-[8px] font-black text-orange-400 uppercase block mb-1 text-left">
+                            Dossier
+                          </span>
+                          <h2 className="text-3xl font-black italic leading-none text-left">
+                            {selectedWikkeling.lotNumber}
+                          </h2>
+                        </div>
+                        <div className="p-3 bg-orange-600 rounded-2xl shadow-lg animate-pulse">
+                          <Zap size={24} />
+                        </div>
+                      </div>
+                      <div className="bg-white rounded-[40px] p-8 border border-slate-200 shadow-sm space-y-8 text-left text-left text-left">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-left">
+                          <div>
+                            <span className="text-[10px] font-black text-slate-400 uppercase block mb-2 text-left">
+                              Gekoppelde Order
+                            </span>
+                            <p className="text-xl font-black text-slate-800 leading-none mb-2 text-left">
+                              {selectedWikkeling.orderId}
+                            </p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase text-left">
+                              {selectedWikkeling.item}
+                            </p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-black text-slate-400 uppercase block mb-2 text-left">
+                              Model
+                            </span>
+                            <p className="text-sm font-mono font-bold text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100 text-left">
+                              {selectedWikkeling.itemCode}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setProductToRelease(selectedWikkeling)}
+                          className="w-full py-6 bg-slate-900 text-white rounded-[30px] font-black uppercase text-base shadow-xl hover:bg-emerald-600 transition-all flex items-center justify-center gap-4 active:scale-95"
+                        >
+                          <ClipboardCheck size={28} /> Product Gereedmelden
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center opacity-30 text-center">
+                      <Zap size={80} className="mb-6 text-slate-200" />
+                      <h4 className="text-2xl font-black uppercase italic text-slate-300">
+                        Selecteer actief lot
+                      </h4>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 overflow-hidden h-full">
+                <LossenView stationId={stationId} appId={appId} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      <style>{`
-        #reader video {
-            object-fit: cover;
-            width: 100% !important;
-            height: 100% !important;
-            border-radius: 35px;
-        }
-      `}</style>
+      {showManualInput && (
+        <div className="fixed inset-0 z-[120] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
+          <div className="w-full max-w-md bg-white rounded-[40px] shadow-2xl overflow-hidden p-10 text-left text-left">
+            <h3 className="text-xl font-black uppercase italic mb-6 text-left">
+              Snel Zoeken
+            </h3>
+            <input
+              autoFocus
+              type="text"
+              value={manualInputValue}
+              onChange={(e) => setManualInputValue(e.target.value)}
+              className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl text-2xl font-mono font-black text-slate-900 outline-none focus:border-blue-600 transition-all uppercase text-center"
+              placeholder="NUMMER..."
+            />
+            <div className="flex gap-4 mt-8 text-left">
+              <button
+                onClick={() => setShowManualInput(false)}
+                className="flex-1 py-4 text-slate-400 font-black uppercase text-[10px]"
+              >
+                Annuleren
+              </button>
+              <button
+                onClick={() => {
+                  setSidebarSearch(manualInputValue);
+                  setShowManualInput(false);
+                }}
+                className="flex-[2] py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl active:scale-95 transition-all"
+              >
+                Zoeken
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showStartModal && selectedOrder && (
+        <ProductionStartModal
+          isOpen={true}
+          onClose={() => setShowStartModal(false)}
+          order={selectedOrder}
+          stationId={stationId}
+          onStart={handleStartProduction}
+          existingProducts={allTracked}
+        />
+      )}
+      {productToRelease && (
+        <ProductReleaseModal
+          isOpen={true}
+          product={productToRelease}
+          onClose={() => {
+            setProductToRelease(null);
+            setSelectedTrackedId(null);
+          }}
+          appId={appId}
+        />
+      )}
     </div>
   );
 };

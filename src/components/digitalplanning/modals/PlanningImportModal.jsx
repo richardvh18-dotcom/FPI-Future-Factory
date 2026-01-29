@@ -1,365 +1,244 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   X,
   Upload,
   FileSpreadsheet,
-  AlertCircle,
-  CheckCircle,
-  Calendar,
-  ArrowRight,
-  GitMerge,
+  CheckCircle2,
+  AlertTriangle,
+  Loader2,
+  Table,
   RefreshCw,
-  Loader2, // <-- DEZE WAS VERGETEN, NU TOEGEVOEGD
+  PlusCircle,
+  Info,
+  Calendar,
 } from "lucide-react";
 import {
   collection,
-  addDoc,
-  serverTimestamp,
-  getDocs,
-  query,
-  where,
   writeBatch,
   doc,
+  serverTimestamp,
+  getDocs,
 } from "firebase/firestore";
-import { db, appId } from "../../../config/firebase";
+import { db } from "../../../config/firebase";
+import * as XLSX from "xlsx";
 import {
-  format,
   subWeeks,
-  differenceInCalendarDays,
+  format,
   isValid,
   parseISO,
-  getYear,
+  differenceInDays,
 } from "date-fns";
 
 const PlanningImportModal = ({ isOpen, onClose, onSuccess }) => {
-  const [file, setFile] = useState(null);
-  const [previewData, setPreviewData] = useState([]);
+  const [fileData, setFileData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
-
-  // Cache voor checks
-  const [existingOrderIds, setExistingOrderIds] = useState(new Set());
-  const [existingOrderDocs, setExistingOrderDocs] = useState({});
-  const [dbProductIndex, setDbProductIndex] = useState([]);
-
-  // Overschrijf modus state
-  const [overwriteMode, setOverwriteMode] = useState(false);
-
-  const [stats, setStats] = useState({
-    total: 0,
-    new: 0,
-    skipped: 0,
-    updated: 0,
-  });
-
-  // REF voor de file input (FIX VOOR VERKENNER PROBLEEM)
+  const [existingIds, setExistingIds] = useState(new Set());
+  const [importMode, setImportMode] = useState("new_only");
   const fileInputRef = useRef(null);
 
-  // 1. Haal bestaande orders op
-  useEffect(() => {
-    if (isOpen) {
-      const fetchExistingOrders = async () => {
-        try {
-          const q = query(
-            collection(
-              db,
-              "artifacts",
-              appId,
-              "public",
-              "data",
-              "digital_planning"
-            )
-          );
-          const snapshot = await getDocs(q);
-
-          const ids = new Set();
-          const docsMap = {};
-          const productIndex = [];
-
-          snapshot.docs.forEach((doc) => {
-            const data = doc.data();
-            if (data.orderId) {
-              ids.add(data.orderId);
-              docsMap[data.orderId] = doc.id;
-            }
-
-            const itemKey = (data.item || data.description || "")
-              .trim()
-              .toUpperCase();
-            if (itemKey && data.week) {
-              productIndex.push({
-                item: itemKey,
-                week: parseInt(data.week),
-              });
-            }
-          });
-
-          setExistingOrderIds(ids);
-          setExistingOrderDocs(docsMap);
-          setDbProductIndex(productIndex);
-        } catch (error) {
-          console.error("Fout bij ophalen bestaande orders:", error);
-        }
-      };
-      fetchExistingOrders();
-      setFile(null);
-      setPreviewData([]);
-      setStats({ total: 0, new: 0, skipped: 0, updated: 0 });
-      setOverwriteMode(false);
-    }
-  }, [isOpen]);
+  const appId = typeof __app_id !== "undefined" ? __app_id : "fittings-app-v1";
 
   useEffect(() => {
-    if (file) {
-      parseCSV(file);
-    }
-  }, [overwriteMode]);
+    const fetchExisting = async () => {
+      if (!isOpen) return;
+      try {
+        const snap = await getDocs(
+          collection(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "digital_planning"
+          )
+        );
+        const ids = new Set(snap.docs.map((d) => d.id));
+        setExistingIds(ids);
+      } catch (err) {
+        console.error("Fout bij ophalen bestaande orders:", err);
+      }
+    };
+    fetchExisting();
+  }, [isOpen, appId]);
 
-  const getUrgencyStatus = (deliveryDateObj) => {
-    if (!deliveryDateObj || !isValid(deliveryDateObj))
-      return { color: "text-gray-500", label: "Onbekend" };
+  const normalizeMachine = (val) => {
+    if (!val) return "-";
+    const str = String(val).toUpperCase();
+    return str.startsWith("40") ? str.substring(2) : str;
+  };
+
+  // Helper om datum te parsen en 2 weken terug te rekenen
+  const processDates = (rawDate) => {
+    if (!rawDate) return { delivery: null, planned: null };
+
+    let dateObj = null;
+    if (rawDate instanceof Date) {
+      dateObj = rawDate;
+    } else {
+      dateObj = new Date(rawDate);
+      if (!isValid(dateObj)) dateObj = parseISO(rawDate);
+    }
+
+    if (!isValid(dateObj)) return { delivery: null, planned: null };
+
+    // Bereken deadline: Leverdatum minus 2 weken
+    const plannedDate = subWeeks(dateObj, 2);
+
+    return {
+      delivery: dateObj,
+      planned: plannedDate,
+    };
+  };
+
+  // Helper voor de kleurcodering op basis van de leverdatum t.o.v. vandaag
+  const getDateStatusStyles = (deliveryDate) => {
+    if (!deliveryDate) return "text-slate-900";
 
     const today = new Date();
-    const daysDiff = differenceInCalendarDays(deliveryDateObj, today);
+    const daysUntilDelivery = differenceInDays(deliveryDate, today);
 
-    if (daysDiff <= 7) {
-      return {
-        color: "text-red-600 font-bold",
-        bg: "bg-red-50",
-        label: "Urgent (< 1 week)",
-      };
-    } else if (daysDiff <= 14) {
-      return {
-        color: "text-blue-600 font-bold",
-        bg: "bg-blue-50",
-        label: "Starten (< 2 weken)",
-      };
-    } else {
-      return { color: "text-slate-700", bg: "bg-white", label: "Gepland" };
+    // Rood: 1 week (7 dagen) of minder
+    if (daysUntilDelivery <= 7) {
+      return "text-red-600 font-black";
     }
+    // Blauw: 2 weken (14 dagen) of minder
+    if (daysUntilDelivery <= 14) {
+      return "text-blue-600 font-black";
+    }
+    // Zwart: Meer dan 2 weken
+    return "text-slate-900 font-bold";
   };
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      parseCSV(selectedFile);
-    }
-  };
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-  // Functie om de onzichtbare input te activeren
-  const triggerFileUpload = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  const parseCSV = (file) => {
     setLoading(true);
     const reader = new FileReader();
 
-    reader.onload = (e) => {
-      const text = e.target.result;
-      const lines = text.split("\n");
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target.result;
+        const wb = XLSX.read(bstr, { type: "binary", cellDates: true });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 
-      let startIndex = 6;
+        const headerIndex = rawRows.findIndex(
+          (row) => row.includes("Machine") && row.includes("order")
+        );
 
-      const parsedRows = [];
-      let skippedCount = 0;
-      let newCount = 0;
-      let updateCount = 0;
-
-      for (let i = startIndex + 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-
-        const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-
-        if (cols.length < 15) continue;
-
-        const rawMachine = cols[3]?.replace(/"/g, "").trim();
-        const rawDateString = cols[4]?.replace(/"/g, "").trim();
-        const rawWeek = cols[5]?.replace(/"/g, "").trim();
-        const orderId = cols[6]?.replace(/"/g, "").trim();
-        const project = cols[8]?.replace(/"/g, "").trim();
-        const itemCode = cols[10]?.replace(/"/g, "").trim();
-        const itemDesc = cols[11]?.replace(/"/g, "").trim();
-        const extraCode = cols[12]?.replace(/"/g, "").trim();
-        const drawing = cols[13]?.replace(/"/g, "").trim();
-        const planQty = cols[14]?.replace(/"/g, "").trim();
-
-        if (!orderId || !rawMachine) continue;
-
-        const exists = existingOrderIds.has(orderId);
-
-        if (exists && !overwriteMode) {
-          skippedCount++;
-          continue;
+        if (headerIndex === -1) {
+          alert(
+            "Header niet gevonden. Zorg dat de kolommen 'Machine' en 'order' aanwezig zijn."
+          );
+          setLoading(false);
+          return;
         }
 
-        let deliveryDateObj = null;
-        let deliveryDateString = "";
+        const headers = rawRows[headerIndex];
+        const dataRows = rawRows.slice(headerIndex + 1);
 
-        if (rawDateString) {
-          const d = parseISO(rawDateString);
-          if (isValid(d)) {
-            deliveryDateObj = d;
-            deliveryDateString = format(d, "yyyy-MM-dd");
-          } else {
-            const d2 = new Date(rawDateString);
-            if (isValid(d2)) {
-              deliveryDateObj = d2;
-              deliveryDateString = format(d2, "yyyy-MM-dd");
-            }
-          }
-        }
+        const formatted = dataRows
+          .filter(
+            (row) =>
+              row[headers.indexOf("order")] && row[headers.indexOf("Machine")]
+          )
+          .map((row) => {
+            const orderId = String(row[headers.indexOf("order")]).trim();
+            const manufacturedItem = String(
+              row[headers.indexOf("Manufactured Item")]
+            ).trim();
+            const docId = `${orderId}_${manufacturedItem}`.replace(
+              /[^a-zA-Z0-9]/g,
+              "_"
+            );
 
-        let plannedStartString = "";
-        if (deliveryDateObj) {
-          const startDate = subWeeks(deliveryDateObj, 2);
-          plannedStartString = format(startDate, "yyyy-MM-dd");
-        }
+            const rawDateVal = row[headers.indexOf("datum")];
+            const { delivery, planned } = processDates(rawDateVal);
 
-        const year = deliveryDateObj
-          ? getYear(deliveryDateObj)
-          : new Date().getFullYear();
-        const urgency = getUrgencyStatus(deliveryDateObj);
+            return {
+              id: docId,
+              orderId: orderId,
+              machine: normalizeMachine(row[headers.indexOf("Machine")]),
+              deliveryDate: delivery,
+              plannedDate: planned,
+              weekNumber: parseInt(row[headers.indexOf("Week")]) || null,
+              itemCode: manufacturedItem,
+              item: row[headers.indexOf("Item Desc")] || "-",
+              extraCode: row[headers.indexOf("code")] || "-",
+              plan: parseInt(row[headers.indexOf("Plan")]) || 1,
+              status: "pending",
+              isExisting: existingIds.has(docId),
+            };
+          });
 
-        parsedRows.push({
-          machine: rawMachine,
-          deliveryDate: deliveryDateString,
-          plannedDate: plannedStartString,
-          week: parseInt(rawWeek) || 0,
-          year: year,
-          orderId: orderId,
-          project: project,
-          item: itemCode,
-          description: itemDesc,
-          productCode: extraCode,
-          drawing: drawing,
-          plan: parseInt(planQty) || 0,
-          status: "planned",
-          urgencyColor: urgency.color,
-          urgencyBg: urgency.bg,
-          isNew: !exists,
-          isUpdate: exists && overwriteMode,
-          docId: exists ? existingOrderDocs[orderId] : null,
-        });
-
-        if (!exists) newCount++;
-        if (exists && overwriteMode) updateCount++;
+        setFileData(formatted);
+      } catch (err) {
+        alert("Fout bij het verwerken van het bestand.");
+      } finally {
+        setLoading(false);
       }
-
-      const enrichedRows = parsedRows.map((row) => {
-        const currentItem = (row.description || row.item || "")
-          .trim()
-          .toUpperCase();
-        const currentWeek = row.week;
-        const foundWeeks = new Set();
-
-        dbProductIndex.forEach((p) => {
-          if (p.item === currentItem && p.week !== currentWeek)
-            foundWeeks.add(p.week);
-        });
-
-        parsedRows.forEach((p) => {
-          const pItem = (p.description || p.item || "").trim().toUpperCase();
-          const pWeek = p.week;
-          if (pItem === currentItem && pWeek !== currentWeek)
-            foundWeeks.add(pWeek);
-        });
-
-        const sortedWeeks = Array.from(foundWeeks).sort((a, b) => a - b);
-
-        return {
-          ...row,
-          optimizationHint:
-            sortedWeeks.length > 0 ? sortedWeeks.join(", ") : null,
-        };
-      });
-
-      enrichedRows.sort((a, b) => {
-        if (a.year !== b.year) return a.year - b.year;
-        if (a.week !== b.week) return a.week - b.week;
-        if (a.deliveryDate < b.deliveryDate) return -1;
-        if (a.deliveryDate > b.deliveryDate) return 1;
-        return 0;
-      });
-
-      setPreviewData(enrichedRows);
-      setStats({
-        total: lines.length - startIndex,
-        new: newCount,
-        skipped: skippedCount,
-        updated: updateCount,
-      });
-      setLoading(false);
     };
 
-    reader.readAsText(file);
+    reader.readAsBinaryString(file);
   };
 
-  const handleImport = async () => {
-    if (previewData.length === 0) return;
+  const startImport = async () => {
+    if (fileData.length === 0 || importing) return;
     setImporting(true);
 
+    const dataToProcess =
+      importMode === "new_only"
+        ? fileData.filter((item) => !item.isExisting)
+        : fileData;
+
+    if (dataToProcess.length === 0) {
+      alert("Geen nieuwe orders om te importeren.");
+      setImporting(false);
+      return;
+    }
+
+    const batchSize = 400;
+    let processed = 0;
+
     try {
-      const batch = writeBatch(db);
+      for (let i = 0; i < dataToProcess.length; i += batchSize) {
+        const batch = writeBatch(db);
+        const chunk = dataToProcess.slice(i, i + batchSize);
 
-      previewData.forEach((order) => {
-        const {
-          urgencyColor,
-          urgencyBg,
-          isNew,
-          isUpdate,
-          docId,
-          optimizationHint,
-          ...dbData
-        } = order;
-
-        const dataToSave = {
-          ...dbData,
-          optimizationNote: optimizationHint
-            ? `Ook in week: ${optimizationHint}`
-            : "",
-          source: "excel_import",
-          importedAt: serverTimestamp(),
-        };
-
-        if (isUpdate && docId) {
-          const ref = doc(
+        chunk.forEach((item) => {
+          const { isExisting, ...dbData } = item;
+          const docRef = doc(
             db,
             "artifacts",
             appId,
             "public",
             "data",
             "digital_planning",
-            docId
+            item.id
           );
-          batch.update(ref, dataToSave);
-        } else {
-          const ref = doc(
-            collection(
-              db,
-              "artifacts",
-              appId,
-              "public",
-              "data",
-              "digital_planning"
-            )
+          batch.set(
+            docRef,
+            {
+              ...dbData,
+              lastUpdated: serverTimestamp(),
+              importDate: serverTimestamp(),
+            },
+            { merge: true }
           );
-          batch.set(ref, { ...dataToSave, createdAt: serverTimestamp() });
-        }
-      });
+        });
 
-      await batch.commit();
+        await batch.commit();
+        processed += chunk.length;
+      }
 
-      onSuccess();
+      alert(`Import voltooid! ${processed} regels verwerkt.`);
+      if (onSuccess) onSuccess();
       onClose();
-      alert(`Import voltooid!\n${stats.new} Nieuw\n${stats.updated} Geüpdatet`);
-    } catch (error) {
-      console.error("Import error:", error);
-      alert("Er ging iets mis tijdens het importeren.");
+    } catch (err) {
+      alert("Fout tijdens opslaan.");
     } finally {
       setImporting(false);
     }
@@ -367,287 +246,236 @@ const PlanningImportModal = ({ isOpen, onClose, onSuccess }) => {
 
   if (!isOpen) return null;
 
+  const newCount = fileData.filter((i) => !i.isExisting).length;
+  const existingCount = fileData.filter((i) => i.isExisting).length;
+
   return (
-    <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-      <div className="bg-white w-full max-w-6xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] border border-slate-100">
-        {/* Header */}
-        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-3xl">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in">
+      <div className="bg-white w-full max-w-6xl max-h-[90vh] rounded-[40px] shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95">
+        <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-blue-100 text-blue-600 rounded-xl">
+            <div className="p-3 bg-blue-600 text-white rounded-2xl shadow-lg shadow-blue-200">
               <FileSpreadsheet size={24} />
             </div>
             <div>
-              <h2 className="text-xl font-black text-slate-800 uppercase italic tracking-tighter">
-                Importeer Planning
+              <h2 className="text-2xl font-black text-slate-900 uppercase italic tracking-tight">
+                Planning Import
               </h2>
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                Excel / CSV Upload + Optimalisatie Check
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1 italic">
+                Urgentie:{" "}
+                <span className="text-slate-900 font-black">Zwart &gt; 2w</span>{" "}
+                | <span className="text-blue-600 font-black">Blauw 2w</span> |{" "}
+                <span className="text-red-600 font-black">Rood 1w</span>
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-slate-200 rounded-full transition-colors"
+            className="p-3 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
           >
-            <X size={24} className="text-slate-400" />
+            <X size={24} />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
-          {/* Upload Area - CLICK HANDLER FIX */}
-          {!file && (
+        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+          {fileData.length === 0 ? (
             <div
-              onClick={triggerFileUpload}
-              className="border-4 border-dashed border-slate-200 rounded-3xl p-12 text-center hover:border-blue-400 hover:bg-blue-50/50 transition-all group cursor-pointer"
+              onClick={() => fileInputRef.current?.click()}
+              className="border-4 border-dashed border-slate-100 rounded-[40px] p-16 text-center hover:border-blue-400 hover:bg-blue-50/30 transition-all cursor-pointer group"
             >
-              {/* HIDDEN INPUT MET REF */}
               <input
-                ref={fileInputRef}
                 type="file"
-                accept=".csv,.xlsx,.xls"
+                ref={fileInputRef}
                 onChange={handleFileChange}
                 className="hidden"
+                accept=".csv, .xlsx, .xls"
               />
-              <div className="flex flex-col items-center gap-4 group-hover:scale-105 transition-transform duration-300">
-                <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center shadow-sm">
-                  <Upload size={40} />
+              {loading ? (
+                <Loader2
+                  size={64}
+                  className="mx-auto text-blue-500 animate-spin mb-6"
+                />
+              ) : (
+                <Upload
+                  size={64}
+                  className="mx-auto text-slate-200 group-hover:text-blue-400 transition-colors mb-6"
+                />
+              )}
+              <h3 className="text-xl font-black text-slate-800 uppercase italic">
+                Selecteer Planning Bestand
+              </h3>
+              <p className="text-slate-400 font-medium mt-2">
+                Berekening startdatum en urgentie vindt automatisch plaats
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 text-center">
+                  <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest block mb-1">
+                    Nieuwe Orders
+                  </span>
+                  <span className="text-3xl font-black text-emerald-600 italic">
+                    {newCount}
+                  </span>
                 </div>
+                <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100 text-center">
+                  <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest block mb-1">
+                    Reeds in Systeem
+                  </span>
+                  <span className="text-3xl font-black text-blue-600 italic">
+                    {existingCount}
+                  </span>
+                </div>
+                <div className="bg-slate-900 p-6 rounded-3xl text-white">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3 italic">
+                    Import Strategie
+                  </label>
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => setImportMode("new_only")}
+                      className={`w-full py-2 px-4 rounded-xl text-[10px] font-black uppercase flex items-center justify-between border ${
+                        importMode === "new_only"
+                          ? "bg-emerald-600 border-emerald-500 text-white"
+                          : "bg-white/5 border-white/10 text-slate-400"
+                      }`}
+                    >
+                      Alleen Nieuwe <PlusCircle size={14} />
+                    </button>
+                    <button
+                      onClick={() => setImportMode("overwrite")}
+                      className={`w-full py-2 px-4 rounded-xl text-[10px] font-black uppercase flex items-center justify-between border ${
+                        importMode === "overwrite"
+                          ? "bg-orange-600 border-orange-500 text-white"
+                          : "bg-white/5 border-white/10 text-slate-400"
+                      }`}
+                    >
+                      Overschrijf alles <RefreshCw size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-[30px] overflow-hidden shadow-sm">
+                <div className="bg-slate-100 px-6 py-3 border-b border-slate-200 flex justify-between items-center font-black uppercase text-[10px] text-slate-500 tracking-widest">
+                  <span>Preview & Urgentie Controle</span>
+                  <Table size={16} className="opacity-30" />
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-white text-slate-400 font-black uppercase tracking-widest border-b border-slate-100">
+                        <th className="px-6 py-4">Status</th>
+                        <th className="px-6 py-4">Order</th>
+                        <th className="px-6 py-4">Leverdatum (E)</th>
+                        <th className="px-6 py-4">Productie Start (-2w)</th>
+                        <th className="px-6 py-4">Machine</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {fileData.slice(0, 15).map((row, idx) => (
+                        <tr
+                          key={idx}
+                          className="hover:bg-slate-50/50 transition-colors"
+                        >
+                          <td className="px-6 py-4">
+                            <span
+                              className={`${
+                                row.isExisting
+                                  ? "bg-blue-100 text-blue-700"
+                                  : "bg-emerald-100 text-emerald-700"
+                              } px-2 py-0.5 rounded-lg text-[9px] font-black uppercase`}
+                            >
+                              {row.isExisting ? "Bestaand" : "Nieuw"}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 font-black text-slate-900">
+                            {row.orderId}
+                          </td>
+                          <td className="px-6 py-4 text-slate-400">
+                            {row.deliveryDate
+                              ? format(row.deliveryDate, "dd-MM-yyyy")
+                              : "-"}
+                          </td>
+                          <td
+                            className={`px-6 py-4 ${getDateStatusStyles(
+                              row.deliveryDate
+                            )}`}
+                          >
+                            {row.plannedDate
+                              ? format(row.plannedDate, "dd-MM-yyyy")
+                              : "-"}
+                          </td>
+                          <td className="px-6 py-4 text-slate-500 font-bold uppercase">
+                            {row.machine}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="bg-blue-50 border border-blue-100 p-5 rounded-3xl flex items-start gap-4 shadow-sm">
+                <Info className="text-blue-500 shrink-0 mt-1" size={24} />
                 <div>
-                  <h3 className="text-lg font-bold text-slate-700">
-                    Klik hier om te uploaden
-                  </h3>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Ondersteunt .csv en .xlsx (Kolommen D t/m P)
+                  <h4 className="text-sm font-black text-blue-900 uppercase">
+                    Kleurcodering Productie Start
+                  </h4>
+                  <p className="text-xs text-blue-800 font-medium leading-relaxed mt-1 italic">
+                    Het systeem bepaalt de kleur van de startdatum op basis van
+                    de resterende tijd tot levering:
+                    <br />•{" "}
+                    <span className="text-slate-900 font-bold">
+                      Zwart:
+                    </span>{" "}
+                    Productie start ligt nog in de toekomst.
+                    <br />•{" "}
+                    <span className="text-blue-600 font-bold">Blauw:</span>{" "}
+                    Vandaag is de uiterste startdatum (2 weken zone).
+                    <br />•{" "}
+                    <span className="text-red-600 font-bold">Rood:</span> De
+                    order is urgent of de startdatum is al verstreken (1 week
+                    zone).
                   </p>
                 </div>
               </div>
             </div>
           )}
-
-          {/* Overwrite Toggle */}
-          <div className="flex items-center justify-end mb-4 px-2">
-            <label className="flex items-center gap-3 cursor-pointer select-none bg-slate-50 px-4 py-2 rounded-xl border border-slate-200 hover:border-blue-300 transition-colors">
-              <div
-                className={`w-10 h-5 rounded-full relative transition-colors ${
-                  overwriteMode ? "bg-blue-600" : "bg-slate-300"
-                }`}
-              >
-                <div
-                  className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${
-                    overwriteMode ? "left-6" : "left-1"
-                  }`}
-                />
-              </div>
-              <div>
-                <span className="block text-xs font-black text-slate-700 uppercase">
-                  Overschrijf Bestaande
-                </span>
-                <span className="block text-[10px] text-slate-400 font-medium">
-                  Update orders met zelfde ID
-                </span>
-              </div>
-              <input
-                type="checkbox"
-                checked={overwriteMode}
-                onChange={(e) => setOverwriteMode(e.target.checked)}
-                className="hidden"
-              />
-            </label>
-          </div>
-
-          {loading && (
-            <div className="py-12 text-center">
-              <Loader2
-                className="animate-spin mx-auto text-blue-600 mb-4"
-                size={48}
-              />
-              <p className="text-slate-500 font-bold">Bestand analyseren...</p>
-            </div>
-          )}
-
-          {previewData.length > 0 && !loading && (
-            <div className="space-y-6">
-              {/* Stats Bar */}
-              <div className="grid grid-cols-4 gap-4">
-                <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 flex items-center gap-3">
-                  <CheckCircle className="text-emerald-600" />
-                  <div>
-                    <p className="text-2xl font-black text-emerald-700">
-                      {stats.new}
-                    </p>
-                    <p className="text-xs font-bold text-emerald-600 uppercase">
-                      Nieuw
-                    </p>
-                  </div>
-                </div>
-                {overwriteMode ? (
-                  <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3">
-                    <RefreshCw className="text-blue-600" />
-                    <div>
-                      <p className="text-2xl font-black text-blue-700">
-                        {stats.updated}
-                      </p>
-                      <p className="text-xs font-bold text-blue-600 uppercase">
-                        Updates
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex items-center gap-3">
-                    <AlertCircle className="text-amber-600" />
-                    <div>
-                      <p className="text-2xl font-black text-amber-700">
-                        {stats.skipped}
-                      </p>
-                      <p className="text-xs font-bold text-amber-600 uppercase">
-                        Geskipt
-                      </p>
-                    </div>
-                  </div>
-                )}
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center gap-3 col-span-2">
-                  <Calendar className="text-slate-600" />
-                  <div>
-                    <p className="text-2xl font-black text-slate-700">
-                      Week {previewData.length > 0 ? previewData[0].week : "-"}{" "}
-                      -{" "}
-                      {previewData.length > 0
-                        ? previewData[previewData.length - 1].week
-                        : "-"}
-                    </p>
-                    <p className="text-xs font-bold text-slate-500 uppercase">
-                      Planning Range
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="overflow-hidden rounded-2xl border border-slate-200">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase tracking-wider border-b border-slate-200">
-                    <tr>
-                      <th className="p-4">Status</th>
-                      <th className="p-4">Leverdatum</th>
-                      <th className="p-4">Week</th>
-                      <th className="p-4">Order</th>
-                      <th className="p-4">Machine</th>
-                      <th className="p-4">Item</th>
-                      <th className="p-4">Code</th>
-                      <th className="p-4 text-right">Aantal</th>
-                      <th className="p-4 text-orange-600">Optimalisatie</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {previewData.map((row, idx) => (
-                      <tr
-                        key={idx}
-                        className={`hover:bg-slate-50 ${row.urgencyBg || ""}`}
-                      >
-                        <td className="p-4">
-                          {row.isNew && (
-                            <span className="bg-emerald-500 text-white text-[10px] px-2 py-0.5 rounded font-black uppercase tracking-wider shadow-sm">
-                              NIEUW
-                            </span>
-                          )}
-                          {row.isUpdate && (
-                            <span className="bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded font-black uppercase tracking-wider shadow-sm">
-                              UPDATE
-                            </span>
-                          )}
-                        </td>
-                        <td
-                          className={`p-4 font-mono font-bold ${row.urgencyColor}`}
-                        >
-                          {row.deliveryDate || "-"}
-                        </td>
-                        <td className="p-4 font-bold text-slate-700">
-                          {row.week}
-                        </td>
-                        <td className="p-4 font-mono text-blue-600 font-bold">
-                          {row.orderId}
-                        </td>
-                        <td className="p-4 text-slate-600 font-bold">
-                          {row.machine}
-                        </td>
-                        <td
-                          className="p-4 text-slate-600 truncate max-w-[150px]"
-                          title={row.description}
-                        >
-                          {row.description || row.item}
-                        </td>
-                        <td className="p-4 font-mono text-xs font-bold bg-slate-100 rounded text-center">
-                          {row.productCode || "-"}
-                        </td>
-                        <td className="p-4 text-right font-black text-slate-800">
-                          {row.plan}
-                        </td>
-                        <td className="p-4">
-                          {row.optimizationHint && (
-                            <div className="flex items-center gap-2 text-orange-600 bg-orange-50 px-2 py-1 rounded-lg text-xs font-bold w-fit border border-orange-100">
-                              <GitMerge size={14} />
-                              <span>Week: {row.optimizationHint}</span>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {file && previewData.length === 0 && !loading && (
-            <div className="text-center py-12 text-slate-400">
-              <AlertCircle size={48} className="mx-auto mb-4 text-amber-400" />
-              <h3 className="text-lg font-bold text-slate-700">
-                Geen nieuwe orders gevonden
-              </h3>
-              <button
-                onClick={() => setFile(null)}
-                className="mt-4 text-blue-600 font-bold hover:underline"
-              >
-                Ander bestand proberen
-              </button>
-            </div>
-          )}
         </div>
 
-        <div className="p-6 border-t border-slate-100 bg-slate-50 rounded-b-3xl flex justify-between items-center">
-          {file ? (
+        <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-between items-center shrink-0">
+          <button
+            onClick={() => setFileData([])}
+            disabled={fileData.length === 0 || importing}
+            className="text-slate-400 hover:text-slate-600 font-black text-[10px] uppercase tracking-widest disabled:opacity-0 transition-all"
+          >
+            Bestand Wissen
+          </button>
+          <div className="flex gap-4">
             <button
-              onClick={() => {
-                setFile(null);
-                setPreviewData([]);
-              }}
-              className="text-slate-500 font-bold text-sm hover:text-slate-800 transition-colors"
+              onClick={onClose}
+              className="px-8 py-4 bg-white border-2 border-slate-200 text-slate-400 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-100"
             >
               Annuleren
             </button>
-          ) : (
-            <div></div>
-          )}
-
-          <button
-            onClick={handleImport}
-            disabled={previewData.length === 0 || importing}
-            className={`px-8 py-4 rounded-xl font-black uppercase text-sm tracking-widest flex items-center gap-3 shadow-lg transition-all ${
-              previewData.length === 0
-                ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                : "bg-blue-600 text-white hover:bg-blue-700 active:scale-95"
-            }`}
-          >
-            {importing ? (
-              <>
-                <Loader2 className="animate-spin" /> Importeren...
-              </>
-            ) : (
-              <>
-                Importeren <ArrowRight size={20} />
-              </>
-            )}
-          </button>
+            <button
+              onClick={startImport}
+              disabled={fileData.length === 0 || importing}
+              className="px-10 py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all flex items-center gap-3 disabled:opacity-50"
+            >
+              {importing ? (
+                <Loader2 className="animate-spin" size={20} />
+              ) : (
+                <CheckCircle2 size={20} />
+              )}
+              {importing
+                ? "Importeren..."
+                : `Importeer ${
+                    importMode === "new_only" ? newCount : fileData.length
+                  } Regels`}
+            </button>
+          </div>
         </div>
       </div>
     </div>

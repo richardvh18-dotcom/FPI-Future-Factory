@@ -1,171 +1,160 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo } from "react";
 import {
   Search,
-  X,
-  RotateCcw,
-  FileUp,
-  Tag,
-  FileText,
-  ChevronDown,
-  ClipboardList,
+  ChevronRight,
+  Filter,
+  LayoutList,
+  AlertCircle,
+  Clock,
+  Briefcase,
+  Sparkles,
 } from "lucide-react";
+import StatusBadge from "./common/StatusBadge";
 
 /**
- * PlanningSidebar V1.6
- * - PERFORMANCE: Verlaagde initiële render-limiet naar 30 items.
- * - PERFORMANCE: Geoptimaliseerde selectie-logica (geeft enkel ID door).
- * - UI: Betere visuele feedback bij het laden van grote lijsten.
+ * PlanningSidebar - Nu met 'NIEUW' indicator voor recent toegevoegde orders.
  */
-const PlanningSidebar = ({
-  orders = [],
-  selectedOrderId, // Veranderd van object naar ID voor stabiliteit
-  onSelect,
-  searchTerm,
-  setSearchTerm,
-  onImport,
-}) => {
-  const [displayCount, setDisplayCount] = useState(30);
+const PlanningSidebar = ({ orders = [], selectedOrderId, onSelect }) => {
+  const [searchTerm, setSearchTerm] = useState("");
 
-  const hasActiveFilters = searchTerm && searchTerm.trim() !== "";
-
-  // Stap 1: Filter de orders (CPU intensief bij grote lijsten)
   const filteredOrders = useMemo(() => {
-    const q = searchTerm.toLowerCase().trim();
-    if (!q) return orders;
+    const term = (searchTerm || "").toLowerCase().trim();
+    if (!term) return orders;
 
-    return orders.filter(
-      (o) =>
-        (o.orderId || "").toLowerCase().includes(q) ||
-        (o.item || "").toLowerCase().includes(q)
-    );
+    return orders.filter((order) => {
+      const orderId = (order?.orderId || "").toLowerCase();
+      const itemCode = (
+        order?.itemCode ||
+        order?.productId ||
+        ""
+      ).toLowerCase();
+      const itemDesc = (order?.item || "").toLowerCase();
+      const project = (order?.project || "").toLowerCase();
+
+      return (
+        orderId.includes(term) ||
+        itemCode.includes(term) ||
+        itemDesc.includes(term) ||
+        project.includes(term)
+      );
+    });
   }, [orders, searchTerm]);
 
-  // Stap 2: Toon maar een klein deel (Lazy Loading) om Chrome niet te laten crashen
-  const visibleOrders = useMemo(() => {
-    return filteredOrders.slice(0, displayCount);
-  }, [filteredOrders, displayCount]);
-
-  // Reset de scroll-limiet als de zoekterm verandert
-  useEffect(() => {
-    setDisplayCount(30);
-  }, [searchTerm]);
+  // Helper om te bepalen of een order nieuw is (< 24 uur)
+  const isOrderNew = (order) => {
+    if (!order.createdAt) return false;
+    const createdAt = order.createdAt.toMillis
+      ? order.createdAt.toMillis()
+      : new Date(order.createdAt).getTime();
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return createdAt > twentyFourHoursAgo;
+  };
 
   return (
-    <div className="col-span-12 lg:col-span-4 bg-white rounded-[32px] border border-slate-200 p-6 flex flex-col overflow-hidden shadow-sm h-full text-left animate-in fade-in duration-300">
-      {/* Header sectie */}
-      <div className="flex justify-between items-center mb-6 text-left">
-        <div className="text-left">
-          <h3 className="font-black text-xs uppercase text-slate-400 italic leading-none flex items-center gap-2">
-            <ClipboardList size={14} /> Planning
-          </h3>
-          <p className="text-[8px] font-bold text-slate-300 uppercase mt-1 italic">
-            {filteredOrders.length} orders{" "}
-            {hasActiveFilters ? "gevonden" : "totaal"}
-          </p>
+    <div className="flex flex-col h-full bg-white border-r border-slate-200 animate-in fade-in duration-300">
+      <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+        <div className="relative group">
+          <Search
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors"
+            size={16}
+          />
+          <input
+            type="text"
+            placeholder="Zoek order of item..."
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
         </div>
-        {onImport && (
-          <button
-            onClick={onImport}
-            className="p-2.5 bg-slate-900 text-white rounded-xl hover:bg-emerald-600 transition-all shadow-lg flex items-center gap-2 group active:scale-95"
-            title="Importeer nieuwe planning"
-          >
-            <FileUp size={18} />
-          </button>
-        )}
       </div>
 
-      {/* Zoekbalk met direct reset-optie */}
-      <div className="relative mb-6 text-left group">
-        <Search
-          className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-blue-500 transition-colors"
-          size={16}
-        />
-        <input
-          className="w-full pl-10 pr-10 py-4 bg-slate-50 border border-slate-100 rounded-[20px] text-xs font-bold outline-none focus:bg-white focus:border-blue-400 shadow-inner transition-all"
-          placeholder="Zoek order of item..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
-        {hasActiveFilters && (
-          <button
-            onClick={() => setSearchTerm("")}
-            className="absolute right-4 top-1/2 -translate-y-1/2 p-1 bg-slate-200 text-slate-500 rounded-full hover:bg-red-100 hover:text-red-600 transition-all"
-          >
-            <X size={12} />
-          </button>
-        )}
-      </div>
-
-      {/* De Lijst (Lazy Loaded) */}
-      <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar text-left">
-        {visibleOrders.length === 0 ? (
-          <div className="py-20 text-center opacity-20 flex flex-col items-center gap-2">
-            <Search size={48} strokeWidth={1} />
-            <p className="font-black uppercase text-[10px] tracking-widest">
-              Geen orders gevonden
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-2">
+        {filteredOrders.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 px-4 text-center opacity-40">
+            <AlertCircle size={32} className="mb-2 text-slate-300" />
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+              Geen resultaten
             </p>
           </div>
         ) : (
-          visibleOrders.map((orderItem) => (
-            <div
-              key={orderItem.id}
-              onClick={() => onSelect(orderItem)}
-              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer group ${
-                selectedOrderId === orderItem.orderId ||
-                selectedOrderId === orderItem.id
-                  ? "border-blue-500 bg-blue-50/30 shadow-md scale-[1.02]"
-                  : "border-transparent bg-slate-50 hover:border-slate-200 hover:bg-white"
-              }`}
-            >
-              <div className="flex justify-between mb-1 text-left">
-                <div className="flex items-center gap-2 text-left">
-                  <span className="text-[10px] font-mono font-black text-blue-600 uppercase tracking-tighter">
-                    {orderItem.orderId}
-                  </span>
-                  {orderItem.referenceCode && (
-                    <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[8px] font-black rounded border border-amber-200 uppercase">
-                      {orderItem.referenceCode}
-                    </span>
-                  )}
-                </div>
-                <span className="text-[9px] font-black uppercase text-slate-400 bg-slate-100 px-2 rounded italic shrink-0">
-                  {orderItem.machine}
-                </span>
-              </div>
-              <h4 className="font-black text-[11px] text-slate-800 leading-tight italic line-clamp-2 uppercase">
-                {orderItem.item}
-              </h4>
+          filteredOrders.map((order) => {
+            const isSelected =
+              selectedOrderId === order.id || selectedOrderId === order.orderId;
+            const isNew = isOrderNew(order);
 
-              <div className="mt-3 flex items-center gap-3 text-left">
-                <div className="flex-1 h-1 bg-slate-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 transition-all duration-1000"
-                    style={{
-                      width: `${
-                        (Number(orderItem.liveFinish || 0) /
-                          Math.max(1, Number(orderItem.plan))) *
-                        100
-                      }%`,
-                    }}
+            return (
+              <button
+                key={order.id}
+                onClick={() => onSelect(order.id)}
+                className={`w-full p-4 rounded-2xl border-2 text-left transition-all duration-200 group relative overflow-hidden
+                  ${
+                    isSelected
+                      ? "bg-blue-50 border-blue-500 shadow-md shadow-blue-100"
+                      : "bg-white border-slate-50 hover:border-slate-200 hover:bg-slate-50"
+                  }
+                `}
+              >
+                {/* Nieuw Badge */}
+                {isNew && (
+                  <div className="absolute top-0 left-0 px-2 py-0.5 bg-emerald-500 text-white text-[7px] font-black uppercase tracking-tighter rounded-br-lg shadow-sm z-10">
+                    Nieuw
+                  </div>
+                )}
+
+                {/* Urgentie indicator */}
+                {order.isUrgent && (
+                  <div className="absolute top-0 right-0 w-1.5 h-full bg-red-500 animate-pulse" />
+                )}
+
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex flex-col overflow-hidden">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`font-black text-sm tracking-tighter truncate ${
+                          isSelected ? "text-blue-700" : "text-slate-900"
+                        }`}
+                      >
+                        {order.orderId || "Geen ID"}
+                      </span>
+                      {isNew && (
+                        <Sparkles
+                          size={10}
+                          className="text-emerald-500 animate-bounce"
+                        />
+                      )}
+                    </div>
+                    {order.project && (
+                      <span className="text-[9px] font-bold uppercase tracking-tighter text-slate-400 truncate max-w-[120px]">
+                        {order.project}
+                      </span>
+                    )}
+                  </div>
+                  <StatusBadge status={order.status} />
+                </div>
+
+                <p className="text-[10px] font-bold text-slate-400 truncate mb-3">
+                  {order.itemCode || order.productId || "Geen artikelcode"}
+                </p>
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100/50">
+                  <div className="flex items-center gap-2">
+                    <Clock size={10} className="text-slate-300" />
+                    <span className="text-[9px] font-black text-slate-400 uppercase">
+                      W{order.weekNumber || order.week || "--"}
+                    </span>
+                  </div>
+                  <ChevronRight
+                    size={14}
+                    className={`transition-transform duration-300 ${
+                      isSelected
+                        ? "text-blue-500 translate-x-1"
+                        : "text-slate-200 group-hover:text-slate-400"
+                    }`}
                   />
                 </div>
-                <span className="text-[9px] font-black text-slate-500 whitespace-nowrap">
-                  {orderItem.liveFinish || 0} / {orderItem.plan}
-                </span>
-              </div>
-            </div>
-          ))
-        )}
-
-        {/* Laad meer knop om Chrome te ontlasten */}
-        {filteredOrders.length > displayCount && (
-          <button
-            onClick={() => setDisplayCount((prev) => prev + 50)}
-            className="w-full py-4 text-[10px] font-black uppercase text-blue-600 bg-blue-50 rounded-2xl hover:bg-blue-100 transition-all flex items-center justify-center gap-2 mt-4 border-2 border-dashed border-blue-100"
-          >
-            <ChevronDown size={14} /> Toon volgende 50 orders (
-            {filteredOrders.length - displayCount} resterend)
-          </button>
+              </button>
+            );
+          })
         )}
       </div>
     </div>
